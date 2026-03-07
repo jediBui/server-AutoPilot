@@ -47,7 +47,7 @@
         path: "~{{ ansible_user }}/.bashrc"
         marker: "# {mark} ANSIBLE MANAGED BLOCK: MODERN TERMINAL"
         block: |
-          # Initialize Starship
+          # Initialize Starship 
           eval "$(starship init bash)"
           
           # Enable fzf key bindings and completion
