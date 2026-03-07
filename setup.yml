@@ -1,0 +1,64 @@
+---
+- name: Modern Ubuntu Server with Advanced Autocomplete
+  hosts: all
+  become: yes
+  vars:
+    github_user: "your-github-username"
+
+  tasks:
+    - name: Install Base Packages and Autocomplete Tools
+      apt:
+        update_cache: yes
+        name: 
+          - curl
+          - git
+          - zsh
+          - openssh-server
+          - bash-completion
+          - fzf
+        state: present
+
+    ## --- SSH CONFIGURATION ---
+    - name: Secure SSH and Deploy GitHub Keys
+      block:
+        - name: Set SSH Policies
+          lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: "{{ item.regexp }}"
+            line: "{{ item.line }}"
+          loop:
+            - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+            - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+          notify: Restart SSH
+
+        - name: Fetch Public Keys from GitHub
+          authorized_key:
+            user: "{{ ansible_user }}"
+            key: "https://github.com/{{ github_user }}.keys"
+
+    ## --- TERMINAL & AUTOCOMPLETE ---
+    - name: Install Starship
+      shell: curl -sS https://starship.rs/install.sh | sh -s -- -y
+      args:
+        creates: /usr/local/bin/starship
+
+    - name: Configure Bash for fzf and Starship
+      blockinfile:
+        path: "~{{ ansible_user }}/.bashrc"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK: MODERN TERMINAL"
+        block: |
+          # Initialize Starship
+          eval "$(starship init bash)"
+          
+          # Enable fzf key bindings and completion
+          source /usr/share/doc/fzf/examples/key-bindings.bash
+          source /usr/share/doc/fzf/examples/completion.bash
+          
+          # Force bash-completion if not active
+          [[ -f /usr/share/bash-completion/bash_completion ]] && . /usr/share/bash-completion/bash_completion
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted
