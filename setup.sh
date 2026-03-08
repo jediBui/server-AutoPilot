@@ -15,6 +15,7 @@ log() {
 
 # 1. Dependencies
 log "yellow" "Installing the essentials..."
+apt update && apt upgrade && apt clean
 apt update && apt install -y curl git openssh-server bash-completion fzf
 
 # 2. Starship
