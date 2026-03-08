@@ -1,68 +1,65 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # --- CONFIGURATION ---
-GH_USER="jediBui" # <--- CHANGE THIS to your GitHub handle
-USER_HOME=$(eval echo ~$USER)
+readonly GH_USER="jediBui"
+readonly TARGET_USER="${SUDO_USER:-$USER}"
+readonly TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 
-# --- COLORS FOR OUTPUT ---
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-RED='\033[0;31m'
-NC='\033[0m' # No Color
+# --- UI HELPER ---
+log() {
+    local color="$1"; shift
+    local yellow='\033[1;33m' green='\033[0;32m' red='\033[0;31m' nc='\033[0m'
+    echo -e "${!color}TARS: $*$nc"
+}
 
-echo -e "${YELLOW}TARS: Beginning server configuration...${NC}"
+# 1. Root & Environment Check
+[[ $EUID -ne 0 ]] && log "red" "Self-destruct sequence initiated (or you just forgot sudo)." && exit 1
 
-# 1. Root Check
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Error: This script must be run with sudo.${NC}"
-   exit 1
-fi
+log "yellow" "Beginning server configuration... I have a cue light I can use to show you when I'm joking."
 
-# 2. Update and Install Core Tools
-echo -e "${YELLOW}Installing dependencies (fzf, starship, etc.)...${NC}"
+# 2. Package Management
+log "yellow" "Updating system and installing modern essentials..."
 apt update && apt install -y curl git zsh openssh-server bash-completion fzf
 
-# 3. Starship Installation
-if ! command -v starship &> /dev/null; then
+# 3. Starship Installation (Idempotent)
+if ! command -v starship &>/dev/null; then
+    log "yellow" "Installing Starship..."
     curl -sS https://starship.rs/install.sh | sh -s -- -y
 fi
 
-# 4. SSH Configuration (The Security Hardening)
-echo -e "${YELLOW}Hardening SSH and importing GitHub keys...${NC}"
-mkdir -p "$USER_HOME/.ssh"
-chmod 700 "$USER_HOME/.ssh"
+# 4. SSH Hardening & Key Import
+log "yellow" "Hardening SSH for user: $TARGET_USER"
+install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$TARGET_HOME/.ssh"
 
-# Fetch keys from GitHub
-curl -s "https://github.com/${GH_USER}.keys" >> "$USER_HOME/.ssh/authorized_keys"
-chmod 600 "$USER_HOME/.ssh/authorized_keys"
-chown -R $USER:$USER "$USER_HOME/.ssh"
+# Fetch GitHub keys directly to authorized_keys
+if curl -s "https://github.com/${GH_USER}.keys" | tee -a "$TARGET_HOME/.ssh/authorized_keys" >/dev/null; then
+    chmod 600 "$TARGET_HOME/.ssh/authorized_keys"
+    chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.ssh/authorized_keys"
+fi
 
-# Update SSH Policy: Key-auth only, no root password login
-sed -i 's/#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
-sed -i 's/#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-sed -i 's/#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+# Modern SSH config (using a drop-in file is cleaner than sed-ing the main config)
+cat <<EOF > /etc/ssh/sshd_config.d/99-hardened.conf
+PasswordAuthentication no
+PubkeyAuthentication yes
+PermitRootLogin prohibit-password
+EOF
 
-# 5. Modernize .bashrc (Idempotent - won't duplicate)
-echo -e "${YELLOW}Configuring .bashrc with Starship and fzf...${NC}"
+# 5. Bashrc Refinement
+log "yellow" "Injecting Starship and fzf into .bashrc..."
 
-if ! grep -q "ANSIBLE_MANAGED_BLOCK" "$USER_HOME/.bashrc"; then
-cat << EOF >> "$USER_HOME/.bashrc"
+# Use a marker to ensure we don't double-write
+MARKER="# [TARS-MODERN-TERMINAL]"
+if ! grep -q "$MARKER" "$TARGET_HOME/.bashrc"; then
+    cat <<EOF >> "$TARGET_HOME/.bashrc"
 
-# --- ANSIBLE_MANAGED_BLOCK: MODERN TERMINAL ---
-# Initialize Starship
+$MARKER
 eval "\$(starship init bash)"
-
-# Enable fzf key bindings and completion
-source /usr/share/doc/fzf/examples/key-bindings.bash
-source /usr/share/doc/fzf/examples/completion.bash
-
-# Force bash-completion
-[[ -f /usr/share/bash-completion/bash_completion ]] && . /usr/share/bash-completion/bash_completion
-# --- END BLOCK ---
+[ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
+[ -f /usr/share/doc/fzf/examples/completion.bash ] && source /usr/share/doc/fzf/examples/completion.bash
 EOF
 fi
 
 # 6. Finalize
 systemctl restart ssh
-echo -e "${GREEN}Configuration Complete!${NC}"
-echo -e "${YELLOW}IMPORTANT: Test your SSH connection in a NEW window before logging out.${NC}"
+log "green" "Configuration complete. I'll be in the ship."
+log "yellow" "WARNING: Test SSH in a new terminal before closing this one. Don't make me come get you."
