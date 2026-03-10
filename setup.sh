@@ -18,33 +18,60 @@ log() {
     echo -e "${code}TARS: $*$nc"
 }
 
-[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. Access denied." && exit 1
+[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. I need keys to the cockpit." && exit 1
 
 # 1. Environment Detection
-HAS_GUI=false
-if command -v Xorg >/dev/null || [ -d /usr/share/xsessions ]; then
-    HAS_GUI=true
-    log "yellow" "GUI detected. Prepping RDP."
-fi
+HAS_GNOME=false
+[[ $(command -v gnome-shell) ]] && HAS_GNOME=true
 
 # 2. Package Installation
-log "yellow" "Installing tools, Proxmox Agent, and Starship..."
+log "yellow" "Installing tools, Proxmox Agent, and RDP..."
 apt update && apt install -y \
     curl git openssh-server bash-completion fzf ufw qemu-guest-agent \
-    $( [ "$HAS_GUI" = true ] && echo "xrdp" )
+    gnome-remote-desktop fontconfig
 
-# 3. Services & Firewall
-systemctl enable --now qemu-guest-agent
-if [ "$HAS_GUI" = true ]; then
-    systemctl enable --now xrdp
-    adduser xrdp ssl-cert
-    ufw allow 3389/tcp
+# 3. Install SF Mono Powerline (Twixes Repository)
+log "yellow" "Downloading SF Mono Powerline... It’s an older code, but it checks out."
+FONT_DIR="$TARGET_HOME/.local/share/fonts"
+sudo -u "$TARGET_USER" mkdir -p "$FONT_DIR"
+
+# Download SF Mono Powerline Regular and Bold
+BASE_URL="https://github.com/Twixes/SF-Mono-Powerline/raw/master"
+for style in "Regular" "Bold"; do
+    if [[ ! -f "$FONT_DIR/SF-Mono-Powerline-$style.otf" ]]; then
+        curl -L "$BASE_URL/SF-Mono-Powerline-$style.otf" -o "$FONT_DIR/SF-Mono-Powerline-$style.otf"
+    fi
+done
+
+sudo -u "$TARGET_USER" fc-cache -f "$FONT_DIR"
+
+# 4. Inject Font into Gnome Terminal
+if [ "$HAS_GNOME" = true ]; then
+    log "yellow" "Adjusting Gnome Terminal vision sensors..."
+    PROFILE=$(sudo -u "$TARGET_USER" gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
+    
+    # Apply SF Mono Powerline at size 12
+    sudo -u "$TARGET_USER" gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$PROFILE/" use-system-font false
+    sudo -u "$TARGET_USER" gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$PROFILE/" font "'SF Mono Powerline 12'"
 fi
+
+# 5. Remote Desktop & Firewall
+systemctl enable --now qemu-guest-agent
 ufw allow ssh
+ufw allow 3389/tcp
 ufw --force enable
 
-# 4. SSH & Keys
-log "yellow" "Syncing GitHub keys for ${GH_USER}..."
+if [ "$HAS_GNOME" = true ]; then
+    log "yellow" "Enabling native Gnome Remote Desktop sharing..."
+    sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" \
+    gsettings set org.gnome.desktop.remote-desktop.rdp screen-share-mode 'mirror-screen'
+    
+    sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" \
+    gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+fi
+
+# 6. SSH & Keys
+log "yellow" "Securing the hatch and importing keys from ${GH_USER}..."
 install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$TARGET_HOME/.ssh"
 curl -s "https://github.com/${GH_USER}.keys" >> "$TARGET_HOME/.ssh/authorized_keys"
 chmod 600 "$TARGET_HOME/.ssh/authorized_keys"
@@ -57,79 +84,41 @@ PermitRootLogin prohibit-password
 EOF
 systemctl restart ssh
 
-# 5. Starship & Theme Profiles (The "Lean/Pure" Standard)
-if ! command -v starship &>/dev/null; then
-    log "yellow" "Installing Starship HUD..."
-    curl -sS https://starship.rs/install.sh | sh -s -- -y
-fi
-
-log "yellow" "Building Lean prompt profiles for all themes..."
+# 7. Starship Minimalist Themes
+log "yellow" "Generating Lean prompt themes..."
 THEME_DIR="$TARGET_HOME/.config/starship_themes"
-mkdir -p "$THEME_DIR"
+sudo -u "$TARGET_USER" mkdir -p "$THEME_DIR"
 
-# --- THEME 1: ONE DARK (Lean) ---
-cat <<'EOF' > "$THEME_DIR/onedark.toml"
-format = "$directory$git_branch$git_status$character"
+for theme in "onedark" "frappe" "mocha"; do
+    case $theme in
+        "onedark") dir="#61afef"; char="#98c379"; git="#c678dd" ;;
+        "frappe")  dir="#8caaee"; char="#a6d189"; git="#ca9ee6" ;;
+        "mocha")   dir="#89b4fa"; char="#a6e3a1"; git="#cba6f7" ;;
+    esac
+
+cat <<EOF > "$THEME_DIR/${theme}.toml"
+format = "\$directory\$git_branch\$git_status\$character"
 add_newline = false
 [directory]
-style = "bold #61afef"
-format = "[$path]($style) "
+style = "bold $dir"
+format = "[\$path](\$style) "
 [character]
-success_symbol = "[❯](bold #98c379)"
+success_symbol = "[❯](bold $char)"
 error_symbol = "[❯](bold #e06c75)"
 [git_branch]
 symbol = " "
-style = "bold #c678dd"
-format = "on [$symbol$branch]($style) "
+style = "bold $git"
+format = "on [\$symbol\$branch](\$style) "
 [git_status]
 style = "bold #e06c75"
-format = "([$all_status$ahead_behind]($style) )"
+format = "([\$all_status\$ahead_behind](\$style) )"
 EOF
+done
 
-# --- THEME 2: CATPPUCCIN FRAPPÉ (Lean) ---
-cat <<'EOF' > "$THEME_DIR/frappe.toml"
-format = "$directory$git_branch$git_status$character"
-add_newline = false
-[directory]
-style = "bold #8caaee"
-format = "[$path]($style) "
-[character]
-success_symbol = "[❯](bold #a6d189)"
-error_symbol = "[❯](bold #e78284)"
-[git_branch]
-symbol = " "
-style = "bold #ca9ee6"
-format = "on [$symbol$branch]($style) "
-[git_status]
-style = "bold #e78284"
-format = "([$all_status$ahead_behind]($style) )"
-EOF
+sudo -u "$TARGET_USER" ln -sf "$THEME_DIR/onedark.toml" "$TARGET_HOME/.config/starship.toml"
 
-# --- THEME 3: CATPPUCCIN MOCHA (Lean) ---
-cat <<'EOF' > "$THEME_DIR/mocha.toml"
-format = "$directory$git_branch$git_status$character"
-add_newline = false
-[directory]
-style = "bold #89b4fa"
-format = "[$path]($style) "
-[character]
-success_symbol = "[❯](bold #a6e3a1)"
-error_symbol = "[❯](bold #f38ba8)"
-[git_branch]
-symbol = " "
-style = "bold #cba6f7"
-format = "on [$symbol$branch]($style) "
-[git_status]
-style = "bold #f38ba8"
-format = "([$all_status$ahead_behind]($style) )"
-EOF
-
-# Set One Dark as the initial default
-ln -sf "$THEME_DIR/onedark.toml" "$TARGET_HOME/.config/starship.toml"
-chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
-
-# 6. Deploy .bashrc
-log "yellow" "Finalizing .bashrc with the Lean theme switcher..."
+# 8. Bashrc & Aliases
+log "yellow" "Updating .bashrc cockpit settings..."
 [ -f "$TARGET_HOME/.bashrc" ] && cp "$TARGET_HOME/.bashrc" "$TARGET_HOME/.bashrc.bak"
 
 cat <<'EOF' > "$TARGET_HOME/.bashrc"
@@ -141,12 +130,12 @@ HISTSIZE=10000
 
 eval "$(starship init bash)"
 
-# Theme Swapping Aliases
+# Theme Swapping
 alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark (Lean) active."'
 alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Catppuccin Frappe (Lean) active."'
 alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Catppuccin Mocha (Lean) active."'
 
-# FZF & Smart History
+# FZF & History
 [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
 bind '"\e[A": history-search-backward'
 bind '"\e[B": history-search-forward'
@@ -157,4 +146,4 @@ EOF
 
 chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.bashrc"
 
-log "green" "All themes updated to the Minimalist Lean style. Mission successful."
+log "green" "System fully configured. SF Mono Powerline is now the primary font."
