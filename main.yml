@@ -69,17 +69,17 @@
       register: font_download
 
     - name: TARS | Updating font cache
+      command: fc-cache -f "{{ font_dir }}"
       become: true
       become_user: "{{ target_user }}"
-      command: fc-cache -f "{{ font_dir }}"
       when: font_download.changed
 
     - name: TARS | Configuring GNOME Terminal font
-      become: true
-      become_user: "{{ target_user }}"
       dconf:
         key: "/org/gnome/terminal/legacy/profiles:/:{{ item }}/font"
         value: "'SF Mono Powerline 12'"
+      become: true
+      become_user: "{{ target_user }}"
       loop: "{{ [lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default' ) | replace(\"'\", \"\")] }}"
       when: gnome_check.rc == 0
 
@@ -113,16 +113,14 @@
       notify: Restart SSH
 
     - name: TARS | Creating Starship theme directory
-      become: true
-      become_user: "{{ target_user }}"
       file:
         path: "{{ target_home }}/.config/starship_themes"
         state: directory
         mode: '0755'
-
-    - name: TARS | Writing Starship Theme Files
       become: true
       become_user: "{{ target_user }}"
+
+    - name: TARS | Writing Starship Theme Files
       copy:
         dest: "{{ target_home }}/.config/starship_themes/{{ item.name }}.toml"
         content: |
@@ -141,13 +139,14 @@
           [git_status]
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
+      become: true
+      become_user: "{{ target_user }}"
       loop: "{{ themes }}"
 
     - name: TARS | Writing .bashrc
-      become: true
-      become_user: "{{ target_user }}"
       copy:
         dest: "{{ target_home }}/.bashrc"
+        owner: "{{ target_user }}"
         content: |
           [ -z "$PS1" ] && return
           HISTCONTROL=ignoreboth
@@ -157,15 +156,17 @@
           alias ll='ls -alF --color=auto'
           alias ..='cd ..'
           alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
-
-    - name: TARS | Linking default Starship theme
       become: true
       become_user: "{{ target_user }}"
+
+    - name: TARS | Linking default Starship theme
       file:
         src: "{{ target_home }}/.config/starship_themes/onedark.toml"
         dest: "{{ target_home }}/.config/starship.toml"
         state: link
         force: yes
+      become: true
+      become_user: "{{ target_user }}"
 
   handlers:
     - name: Restart SSH
