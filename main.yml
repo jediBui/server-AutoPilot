@@ -1,70 +1,83 @@
 ---
-- name: TARS System Provisioning
+# TARS System Provisioning Playbook
+# Run locally: ansible-playbook main.yml --ask-become-pass
+# Or via bootstrap.sh for a fully automated setup.
+
+- name: TARS System Configuration
   hosts: localhost
   connection: local
+  become: true
+
   vars:
     gh_user: "jediBui"
-    target_user: "{{ lookup('env', 'USER') }}"
-    target_home: "{{ lookup('env', 'HOME') }}"
-    font_dir: "{{ lookup('env', 'HOME') }}/.local/share/fonts"
-    themes:
-      - { name: "onedark", dir: "#61afef", char: "#98c379", git: "#c678dd" }
-      - { name: "frappe",  dir: "#8caaee", char: "#a6d189", git: "#ca9ee6" }
-      - { name: "mocha",   dir: "#89b4fa", char: "#a6e3a1", git: "#cba6f7" }
+    target_user: "{{ ansible_env.SUDO_USER | default(ansible_env.USER) }}"
+    target_home: "{{ '/home/' + (ansible_env.SUDO_USER | default(ansible_env.USER)) }}"
+    font_dir: "{{ target_home }}/.local/share/fonts"
+    theme_dir: "{{ target_home }}/.config/starship_themes"
+    starship_themes:
+      - name: onedark
+        dir: "#61afef"
+        char: "#98c379"
+        git: "#c678dd"
+      - name: frappe
+        dir: "#8caaee"
+        char: "#a6d189"
+        git: "#ca9ee6"
+      - name: mocha
+        dir: "#89b4fa"
+        char: "#a6e3a1"
+        git: "#cba6f7"
 
   tasks:
-    - name: TARS | Checking for GNOME presence
+
+    # ── 1. Environment Detection ──────────────────────────────────────────────
+    - name: Check if GNOME is present
       command: which gnome-shell
       register: gnome_check
-      ignore_errors: true
       changed_when: false
+      failed_when: false
 
-    - name: TARS | Check GNOME Terminal schema exists
-      command: gsettings list-schemas
-      register: gnome_schemas
-      ignore_errors: true
-      changed_when: false
-      when: gnome_check.rc == 0
-
-    - name: TARS | Detect GNOME Terminal Profile
-      become_user: "{{ target_user }}"
-      command: gsettings get org.gnome.Terminal.ProfilesList default
-      register: gnome_profile_raw
-      ignore_errors: true
-      changed_when: false
-      when:
-        - gnome_check.rc == 0
-        - gnome_schemas.rc == 0
-        - "'org.gnome.Terminal.ProfilesList' in gnome_schemas.stdout"
-
-    - name: TARS | Set GNOME Terminal Profile Fact
+    - name: Set has_gnome fact
       set_fact:
-        terminal_profile: "{{ gnome_profile_raw.stdout | replace(\"'\", \"\") }}"
-      when:
-        - gnome_profile_raw is not skipped
-        - gnome_profile_raw.rc == 0
+        has_gnome: "{{ gnome_check.rc == 0 }}"
 
-    # FIX: Replaced deprecated apt_key / apt_repository with get_url + deb822_repository
-    - name: TARS | Adding Repositories and Keys
-      become: true
-      block:
-        - name: Download Chrome signing key
-          get_url:
-            url: https://dl.google.com/linux/linux_signing_key.pub
-            dest: /usr/share/keyrings/google-chrome.asc
-            mode: '0644'
+    - name: Get target user UID
+      getent:
+        database: passwd
+        key: "{{ target_user }}"
+      register: target_user_info
 
-        - name: Add Chrome apt repository
-          ansible.builtin.deb822_repository:
-            name: google-chrome
-            uris: http://dl.google.com/linux/chrome/deb/
-            suites: stable
-            components: main
-            architectures: amd64
-            signed_by: /usr/share/keyrings/google-chrome.asc
+    - name: Set target user UID fact
+      set_fact:
+        target_uid: "{{ target_user_info.ansible_facts.getent_passwd[target_user][2] }}"
 
-    - name: TARS | Installing Base Packages
-      become: true
+    # ── 2. Google Chrome Repository ───────────────────────────────────────────
+    - name: Check if Google Chrome is already installed
+      command: which google-chrome-stable
+      register: chrome_check
+      changed_when: false
+      failed_when: false
+
+    - name: Download Google Chrome GPG key
+      shell: |
+        curl -fSsL https://dl.google.com/linux/linux_signing_key.pub \
+          | gpg --dearmor \
+          | tee /usr/share/keyrings/google-chrome.gpg > /dev/null
+      when: chrome_check.rc != 0
+      args:
+        creates: /usr/share/keyrings/google-chrome.gpg
+
+    - name: Add Google Chrome apt repository
+      copy:
+        dest: /etc/apt/sources.list.d/google-chrome.list
+        content: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main\n"
+        owner: root
+        group: root
+        mode: "0644"
+      when: chrome_check.rc != 0
+
+    # ── 3. Package Installation ───────────────────────────────────────────────
+    - name: Update apt cache and install packages
       apt:
         name:
           - curl
@@ -79,95 +92,200 @@
           - google-chrome-stable
         state: present
         update_cache: true
+      register: apt_result
+      retries: 3
+      delay: 5
+      until: apt_result is succeeded
 
-    - name: TARS | Installing Starship
-      become: true
-      shell: curl -sS https://starship.rs/install.sh | sh -s -- -y
-      args:
-        creates: /usr/local/bin/starship
+    # ── 4. Install Starship ───────────────────────────────────────────────────
+    - name: Check if Starship is already installed
+      command: which starship
+      register: starship_check
+      changed_when: false
+      failed_when: false
 
-    - name: TARS | Font Setup
-      block:
-        - name: Create font directory
-          become: true
-          file:
-            path: "{{ font_dir }}"
-            state: directory
-            owner: "{{ target_user }}"
-            mode: '0755'
+    - name: Install Starship prompt
+      shell: curl -sS https://starship.rs/install.sh | sh -s -- --yes
+      when: starship_check.rc != 0
 
-        - name: Download SF Mono Powerline fonts
-          get_url:
-            url: "https://github.com/epk/SF-Mono-Nerd-Font-{{ item }}.otf"
-            dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
-            owner: "{{ target_user }}"
-          loop: ["Regular", "Bold"]
-          register: font_dl
+    # ── 5. SF Mono Powerline Fonts ────────────────────────────────────────────
+    - name: Create font directory
+      file:
+        path: "{{ font_dir }}"
+        state: directory
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0755"
 
-        # FIX: Use selectattr to correctly check changed state across loop results
-        - name: Rebuild font cache
-          become_user: "{{ target_user }}"
-          command: fc-cache -f "{{ font_dir }}"
-          when: font_dl.results | selectattr('changed') | list | length > 0
+    - name: Download SF Mono Powerline fonts
+      get_url:
+        url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
+        dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0644"
+      loop:
+        - Regular
+        - Bold
 
-    - name: TARS | Configure GNOME Terminal Font
+    - name: Download SF Mono Nerd Font Regular
+      get_url:
+        url: "https://github.com/epk/SF-Mono-Nerd-Font/raw/master/SFMono%20Regular%20Nerd%20Font%20Complete.otf"
+        dest: "{{ font_dir }}/SFMono Regular Nerd Font Complete.otf"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0644"
+
+    - name: Rebuild font cache
+      command: fc-cache -f "{{ font_dir }}"
       become_user: "{{ target_user }}"
-      dconf:
-        key: "/org/gnome/terminal/legacy/profiles:/:{{ terminal_profile }}/font"
-        value: "'SF Mono Powerline 12'"
-      when:
-        - gnome_check.rc == 0
-        - terminal_profile is defined
+      changed_when: false
 
-    - name: TARS | Network and Security
-      become: true
-      block:
-        - name: Allow firewall ports
-          ufw:
-            rule: allow
-            port: "{{ item }}"
-            proto: tcp
-          loop: ['22', '3389']
+    # ── 6. GNOME Terminal Font ────────────────────────────────────────────────
+    - name: Get default GNOME Terminal profile UUID
+      command: >
+        sudo -u {{ target_user }}
+        gsettings get org.gnome.Terminal.ProfilesList default
+      register: gnome_profile_raw
+      changed_when: false
+      when: has_gnome
 
-        - name: Enable services
-          systemd:
-            name: "{{ item }}"
-            enabled: yes
-            state: started
-          loop: ['ufw', 'qemu-guest-agent']
+    - name: Parse GNOME Terminal profile UUID
+      set_fact:
+        gnome_profile: "{{ gnome_profile_raw.stdout | replace(\"'\", '') | trim }}"
+      when: has_gnome
 
-        - name: Add GitHub SSH authorized key
-          authorized_key:
-            user: "{{ target_user }}"
-            key: "https://github.com/{{ gh_user }}.keys"
+    - name: Disable system font in GNOME Terminal profile
+      command: >
+        sudo -u {{ target_user }}
+        gsettings set
+        "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
+        use-system-font false
+      changed_when: false
+      when: has_gnome
 
-    - name: TARS | Hardening SSH
-      become: true
+    - name: Set SF Mono Nerd Font as default in GNOME Terminal profile
+      command: >
+        sudo -u {{ target_user }}
+        gsettings set
+        "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
+        font "'SFMono Nerd Font 12'"
+      changed_when: false
+      when: has_gnome
+
+    # ── 7. Services & Firewall ────────────────────────────────────────────────
+    - name: Enable and start qemu-guest-agent
+      systemd:
+        name: qemu-guest-agent
+        state: started
+        enabled: true
+
+    - name: Allow SSH through UFW
+      community.general.ufw:
+        rule: allow
+        name: OpenSSH
+
+    - name: Allow RDP (3389/tcp) through UFW
+      community.general.ufw:
+        rule: allow
+        port: "3389"
+        proto: tcp
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+
+    # ── 8. GNOME Remote Desktop ───────────────────────────────────────────────
+    # Note: DBUS socket may not exist on fresh systems before first login.
+    # Tasks are guarded with failed_when: false to avoid hard failures.
+    - name: Check if user DBUS session socket exists
+      stat:
+        path: "/run/user/{{ target_uid }}/bus"
+      register: dbus_socket
+      when: has_gnome
+
+    - name: Set GNOME RDP screen-share-mode to mirror-screen
+      command: >
+        sudo -u {{ target_user }}
+        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
+        gsettings set org.gnome.desktop.remote-desktop.rdp screen-share-mode mirror-screen
+      changed_when: false
+      failed_when: false
+      when: has_gnome and dbus_socket.stat.exists
+
+    - name: Enable GNOME Remote Desktop RDP
+      command: >
+        sudo -u {{ target_user }}
+        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
+        gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+      changed_when: false
+      failed_when: false
+      when: has_gnome and dbus_socket.stat.exists
+
+    - name: Warn if DBUS socket not found (RDP gsettings skipped)
+      debug:
+        msg: >
+          TARS: DBUS session socket not found for {{ target_user }}.
+          GNOME RDP gsettings will need to be applied after first GUI login.
+          Run: gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+      when: has_gnome and not dbus_socket.stat.exists
+
+    # ── 9. SSH Hardening & Key Import ─────────────────────────────────────────
+    - name: Ensure .ssh directory exists with correct permissions
+      file:
+        path: "{{ target_home }}/.ssh"
+        state: directory
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0700"
+
+    - name: Fetch GitHub SSH public keys
+      uri:
+        url: "https://github.com/{{ gh_user }}.keys"
+        return_content: true
+      register: github_keys
+      retries: 3
+      delay: 5
+      until: github_keys.status == 200
+
+    - name: Ensure GitHub keys are in authorized_keys (idempotent)
+      lineinfile:
+        path: "{{ target_home }}/.ssh/authorized_keys"
+        line: "{{ item }}"
+        create: true
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0600"
+      loop: "{{ github_keys.content.strip().splitlines() }}"
+      when: github_keys.content.strip() != ''
+
+    - name: Deploy hardened SSH config
       copy:
         dest: /etc/ssh/sshd_config.d/99-hardened.conf
         content: |
           PasswordAuthentication no
           PubkeyAuthentication yes
           PermitRootLogin prohibit-password
-      notify: restart ssh
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart SSH
 
-    # FIX: Detect SSH service name for cross-distro compatibility
-    - name: TARS | Detect SSH service name
-      set_fact:
-        ssh_svc: "{{ 'sshd' if ansible_os_family == 'RedHat' else 'ssh' }}"
-
-    # FIX: Create starship_themes directory BEFORE writing theme files into it
-    - name: TARS | Create Starship Config Directory
-      become_user: "{{ target_user }}"
+    # ── 10. Starship Themes ───────────────────────────────────────────────────
+    - name: Create Starship themes directory
       file:
-        path: "{{ target_home }}/.config/starship_themes"
+        path: "{{ theme_dir }}"
         state: directory
-        mode: '0755'
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0755"
 
-    - name: TARS | Starship Themes Generation
-      become_user: "{{ target_user }}"
+    - name: Generate Starship lean theme configs
       copy:
-        dest: "{{ target_home }}/.config/starship_themes/{{ item.name }}.toml"
+        dest: "{{ theme_dir }}/{{ item.name }}.toml"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0644"
         content: |
           format = "$directory$git_branch$git_status$character"
           add_newline = false
@@ -184,50 +302,64 @@
           [git_status]
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
-      loop: "{{ themes }}"
+      loop: "{{ starship_themes }}"
 
-    - name: TARS | Bashrc Drop-in Directory
-      become_user: "{{ target_user }}"
+    - name: Symlink default theme (onedark)
       file:
-        path: "{{ target_home }}/.bashrc.d"
-        state: directory
-        mode: '0755'
+        src: "{{ theme_dir }}/onedark.toml"
+        dest: "{{ target_home }}/.config/starship.toml"
+        state: link
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        force: true
 
-    # FIX: Write to a drop-in file instead of overwriting .bashrc entirely
-    - name: TARS | Write TARS Bashrc Drop-in
-      become_user: "{{ target_user }}"
+    # ── 11. .bashrc Configuration ─────────────────────────────────────────────
+    - name: Backup existing .bashrc
       copy:
-        dest: "{{ target_home }}/.bashrc.d/tars.sh"
+        src: "{{ target_home }}/.bashrc"
+        dest: "{{ target_home }}/.bashrc.bak"
+        remote_src: true
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0644"
+      failed_when: false
+
+    - name: Deploy TARS .bashrc
+      copy:
+        dest: "{{ target_home }}/.bashrc"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0644"
         content: |
+          # TARS SYSTEM CONFIG
           [ -z "$PS1" ] && return
           HISTCONTROL=ignoreboth
           shopt -s histappend
           HISTSIZE=10000
+
           eval "$(starship init bash)"
+
+          # Theme Swapping
+          alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark (Lean) active."'
+          alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Catppuccin Frappe (Lean) active."'
+          alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Catppuccin Mocha (Lean) active."'
+
+          # FZF & History
+          [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
+          bind '"\e[A": history-search-backward'
+          bind '"\e[B": history-search-forward'
+
           alias ll='ls -alF --color=auto'
           alias ..='cd ..'
-          alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
 
-    # FIX: Only touch .bashrc to add the drop-in source line, not replace the whole file
-    - name: TARS | Ensure .bashrc sources drop-ins
-      become_user: "{{ target_user }}"
-      lineinfile:
-        path: "{{ target_home }}/.bashrc"
-        line: 'for f in ~/.bashrc.d/*.sh; do [ -r "$f" ] && source "$f"; done'
-        create: yes
-
-    - name: TARS | Set Default Starship Theme
-      become_user: "{{ target_user }}"
-      file:
-        src: "{{ target_home }}/.config/starship_themes/onedark.toml"
-        dest: "{{ target_home }}/.config/starship.toml"
-        state: link
-        force: yes
+    - name: TARS - System fully configured
+      debug:
+        msg: >
+          TARS: System fully configured. Google Chrome is installed and SF Mono is set.
+          Ready for departure.
 
   handlers:
-    # FIX: Use dynamic ssh_svc name + listen label for reliable notification
     - name: Restart SSH
-      listen: "restart ssh"
-      service:
-        name: "{{ ssh_svc }}"
+      systemd:
+        name: ssh
         state: restarted
