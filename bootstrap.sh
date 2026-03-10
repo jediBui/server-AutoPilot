@@ -9,6 +9,6 @@ apt update && apt install -y ansible
 
 # 2. Execute the Playbook
 # --become-pass allows the playbook to use your sudo privileges
-ansible-playbook setup.yml --ask-become-pass
+ansible-playbook main.yml --ask-become-pass
 
 echo "Mission complete. You can take it from here."
