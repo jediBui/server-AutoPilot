@@ -17,6 +17,16 @@
         that: ansible_user_id == "root"
         fail_msg: "This playbook must be run as root (via sudo)"
 
+    - name: Purge conflicting Chrome repo/keyring files before apt runs
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/google-chrome-stable.list
+        - /etc/apt/sources.list.d/google-chrome.list
+        - /usr/share/keyrings/google-chrome.asc
+        - /usr/share/keyrings/google-chrome.gpg
+
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -93,23 +103,11 @@
         state: present
         update_cache: no
 
-    - name: Remove any conflicting Chrome keyring or repo files
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /usr/share/keyrings/google-chrome.gpg
-        - /usr/share/keyrings/google-chrome.asc
-        - /etc/apt/sources.list.d/google-chrome.list
-        - /etc/apt/sources.list.d/google-chrome-stable.list
-
     - name: Download and install Google Chrome signing key
       shell: |
         curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
           gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
         chmod 644 /usr/share/keyrings/google-chrome.gpg
-      args:
-        creates: /usr/share/keyrings/google-chrome.gpg
 
     - name: Add Google Chrome apt repository
       copy:
