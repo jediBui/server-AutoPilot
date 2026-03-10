@@ -4,7 +4,7 @@
 set -euo pipefail
 
 GITHUB_USER="jediBui"
-GITHUB_REPO="vm-provisioning"
+GITHUB_REPO="server-AutoPilot"
 PLAYBOOK_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/main.yml"
 PLAYBOOK="/tmp/main.yml"
 
