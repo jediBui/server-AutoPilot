@@ -53,6 +53,13 @@
       args:
         creates: /usr/local/bin/starship
 
+    - name: TARS | Creating font directory
+      file:
+        path: "{{ font_dir }}"
+        state: directory
+        owner: "{{ target_user }}"
+        mode: '0755'
+
     - name: TARS | Downloading SF Mono Powerline fonts
       get_url:
         url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
@@ -62,11 +69,13 @@
       register: font_download
 
     - name: TARS | Updating font cache
+      become: true
       become_user: "{{ target_user }}"
       command: fc-cache -f "{{ font_dir }}"
       when: font_download.changed
 
     - name: TARS | Configuring GNOME Terminal font
+      become: true
       become_user: "{{ target_user }}"
       dconf:
         key: "/org/gnome/terminal/legacy/profiles:/:{{ item }}/font"
@@ -103,7 +112,8 @@
           PermitRootLogin prohibit-password
       notify: Restart SSH
 
-    - name: TARS | Creating theme directory
+    - name: TARS | Creating Starship theme directory
+      become: true
       become_user: "{{ target_user }}"
       file:
         path: "{{ target_home }}/.config/starship_themes"
@@ -111,6 +121,7 @@
         mode: '0755'
 
     - name: TARS | Writing Starship Theme Files
+      become: true
       become_user: "{{ target_user }}"
       copy:
         dest: "{{ target_home }}/.config/starship_themes/{{ item.name }}.toml"
@@ -133,6 +144,7 @@
       loop: "{{ themes }}"
 
     - name: TARS | Writing .bashrc
+      become: true
       become_user: "{{ target_user }}"
       copy:
         dest: "{{ target_home }}/.bashrc"
@@ -147,6 +159,7 @@
           alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
 
     - name: TARS | Linking default Starship theme
+      become: true
       become_user: "{{ target_user }}"
       file:
         src: "{{ target_home }}/.config/starship_themes/onedark.toml"
