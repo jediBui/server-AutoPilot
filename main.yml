@@ -14,7 +14,7 @@
 
   tasks:
     - name: TARS | Checking for GNOME presence
-      command: command -v gnome-shell
+      command: which gnome-shell
       register: gnome_check
       ignore_errors: true
       changed_when: false
