@@ -20,90 +20,76 @@
       ignore_errors: true
       changed_when: false
 
-    - name: TARS | Adding Google Chrome signing key
-      apt_key:
-        url: https://dl.google.com/linux/linux_signing_key.pub
-        state: present
-        keyring: /usr/share/keyrings/google-chrome.gpg
+    - name: TARS | Detect GNOME Terminal Profile
+      set_fact:
+        terminal_profile: "{{ lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default' ) | replace(\"'\", \"\") }}"
+      when: gnome_check.rc == 0
 
-    - name: TARS | Adding Google Chrome repository
-      apt_repository:
-        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main"
-        state: present
-        filename: google-chrome
+    - name: TARS | Adding Repositories and Keys
+      block:
+        - apt_key:
+            url: https://dl.google.com/linux/linux_signing_key.pub
+            state: present
+            keyring: /usr/share/keyrings/google-chrome.gpg
+        - apt_repository:
+            repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main"
+            state: present
+            filename: google-chrome
 
-    - name: TARS | Installing required packages
+    - name: TARS | Installing Base Packages
       apt:
-        name:
-          - curl
-          - git
-          - openssh-server
-          - bash-completion
-          - fzf
-          - ufw
-          - qemu-guest-agent
-          - gnome-remote-desktop
-          - fontconfig
-          - google-chrome-stable
+        name: [curl, git, openssh-server, bash-completion, fzf, ufw, qemu-guest-agent, gnome-remote-desktop, fontconfig, google-chrome-stable]
         state: present
         update_cache: true
 
-    - name: TARS | Installing Starship binary
+    - name: TARS | Installing Starship
       shell: curl -sS https://starship.rs/install.sh | sh -s -- -y
       args:
         creates: /usr/local/bin/starship
 
-    - name: TARS | Creating font directory
-      file:
-        path: "{{ font_dir }}"
-        state: directory
-        owner: "{{ target_user }}"
-        mode: '0755'
+    - name: TARS | Font Setup
+      block:
+        - file:
+            path: "{{ font_dir }}"
+            state: directory
+            owner: "{{ target_user }}"
+            mode: '0755'
+        - get_url:
+            url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
+            dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
+            owner: "{{ target_user }}"
+          loop: ["Regular", "Bold"]
+          register: font_dl
+        - command: fc-cache -f "{{ font_dir }}"
+          become_user: "{{ target_user }}"
+          when: font_dl.changed
 
-    - name: TARS | Downloading SF Mono Powerline fonts
-      get_url:
-        url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
-        dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
-        owner: "{{ target_user }}"
-      loop: ["Regular", "Bold"]
-      register: font_download
-
-    - name: TARS | Updating font cache
-      command: fc-cache -f "{{ font_dir }}"
-      become: true
+    - name: TARS | Configure GNOME Terminal Font
       become_user: "{{ target_user }}"
-      when: font_download.changed
-
-    - name: TARS | Configuring GNOME Terminal font
       dconf:
-        key: "/org/gnome/terminal/legacy/profiles:/:{{ item }}/font"
+        key: "/org/gnome/terminal/legacy/profiles:/:{{ terminal_profile }}/font"
         value: "'SF Mono Powerline 12'"
-      loop: "{{ [lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default' ) | replace(\"'\", \"\")] }}"
-      become: true
-      become_user: "{{ target_user }}"
-      when: gnome_check.rc == 0
+      when: 
+        - gnome_check.rc == 0
+        - terminal_profile is defined
 
-    - name: TARS | Setting up Firewall
-      ufw:
-        rule: allow
-        port: "{{ item }}"
-        proto: tcp
-      loop: ['22', '3389']
+    - name: TARS | Network and Security
+      block:
+        - ufw:
+            rule: allow
+            port: "{{ item }}"
+            proto: tcp
+          loop: ['22', '3389']
+        - systemd:
+            name: "{{ item }}"
+            enabled: yes
+            state: started
+          loop: ['ufw', 'qemu-guest-agent']
+        - authorized_key:
+            user: "{{ target_user }}"
+            key: "https://github.com/{{ gh_user }}.keys"
 
-    - name: TARS | Enabling Firewall and QEMU Agent
-      systemd:
-        name: "{{ item }}"
-        enabled: yes
-        state: started
-      loop: ['ufw', 'qemu-guest-agent']
-
-    - name: TARS | Importing GitHub SSH keys
-      authorized_key:
-        user: "{{ target_user }}"
-        state: present
-        key: "https://github.com/{{ gh_user }}.keys"
-
-    - name: TARS | Hardening SSH Configuration
+    - name: TARS | Hardening SSH
       copy:
         dest: /etc/ssh/sshd_config.d/99-hardened.conf
         content: |
@@ -112,15 +98,8 @@
           PermitRootLogin prohibit-password
       notify: Restart SSH
 
-    - name: TARS | Creating Starship theme directory
-      file:
-        path: "{{ target_home }}/.config/starship_themes"
-        state: directory
-        mode: '0755'
-      become: true
+    - name: TARS | Starship Themes Generation
       become_user: "{{ target_user }}"
-
-    - name: TARS | Writing Starship Theme Files
       copy:
         dest: "{{ target_home }}/.config/starship_themes/{{ item.name }}.toml"
         content: |
@@ -140,33 +119,29 @@
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
       loop: "{{ themes }}"
-      become: true
-      become_user: "{{ target_user }}"
 
-    - name: TARS | Writing .bashrc
-      copy:
-        dest: "{{ target_home }}/.bashrc"
-        owner: "{{ target_user }}"
-        content: |
-          [ -z "$PS1" ] && return
-          HISTCONTROL=ignoreboth
-          shopt -s histappend
-          HISTSIZE=10000
-          eval "$(starship init bash)"
-          alias ll='ls -alF --color=auto'
-          alias ..='cd ..'
-          alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
-      become: true
+    - name: TARS | Bashrc and Default Theme
       become_user: "{{ target_user }}"
-
-    - name: TARS | Linking default Starship theme
-      file:
-        src: "{{ target_home }}/.config/starship_themes/onedark.toml"
-        dest: "{{ target_home }}/.config/starship.toml"
-        state: link
-        force: yes
-      become: true
-      become_user: "{{ target_user }}"
+      block:
+        - file:
+            path: "{{ target_home }}/.config/starship_themes"
+            state: directory
+        - copy:
+            dest: "{{ target_home }}/.bashrc"
+            content: |
+              [ -z "$PS1" ] && return
+              HISTCONTROL=ignoreboth
+              shopt -s histappend
+              HISTSIZE=10000
+              eval "$(starship init bash)"
+              alias ll='ls -alF --color=auto'
+              alias ..='cd ..'
+              alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
+        - file:
+            src: "{{ target_home }}/.config/starship_themes/onedark.toml"
+            dest: "{{ target_home }}/.config/starship.toml"
+            state: link
+            force: yes
 
   handlers:
     - name: Restart SSH
