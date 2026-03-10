@@ -214,14 +214,20 @@
         DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
       ignore_errors: yes
 
-    - name: Enable and start gnome-remote-desktop user service (best-effort)
+    - name: Enable gnome-remote-desktop to autostart on login
       become: no
-      shell: |
-        systemctl --user enable gnome-remote-desktop.service
-        systemctl --user start  gnome-remote-desktop.service
-      environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
-        XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid }}"
+      file:
+        path: "{{ user_home }}/.config/systemd/user/default.target.wants"
+        state: directory
+        mode: "0755"
+
+    - name: Symlink gnome-remote-desktop service for autostart
+      become: no
+      file:
+        src: /usr/lib/systemd/user/gnome-remote-desktop.service
+        dest: "{{ user_home }}/.config/systemd/user/default.target.wants/gnome-remote-desktop.service"
+        state: link
+        force: yes
       ignore_errors: yes
 
     - name: Note — RDP will be fully active after first graphical login
@@ -314,33 +320,39 @@
         group: "{{ target_user }}"
 
     # ── GNOME Terminal font configuration (best-effort, needs active session) ─
-    - name: Check if GNOME Terminal is available
-      command: which gnome-terminal
-      register: gnome_terminal_check
-      ignore_errors: yes
+    - name: Check which terminal emulator is installed
+      shell: "command -v gnome-terminal || command -v kgx || command -v xterm || echo none"
+      register: terminal_bin
       changed_when: false
 
-    - name: Configure GNOME Terminal font via dconf (requires user session)
-      become: no
-      shell: |
-        PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
-        dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular {{ font_size }}'"
-        dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
-      environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
-      when: gnome_terminal_check.rc == 0
-      ignore_errors: yes
-      register: gnome_font_result
-
-    - name: Note about font config
-      debug:
-        msg: >
-          GNOME Terminal font could not be set automatically (requires an active graphical session).
-          Run manually after login:
+    - name: Write terminal font dconf script (run after login)
+      copy:
+        dest: "{{ user_home }}/.config/set-terminal-font.sh"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          # Run this once after your first graphical login to apply the terminal font.
+          set -e
+          if command -v gnome-terminal &>/dev/null; then
             PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
             dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular 13'"
             dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
-      when: gnome_font_result is defined and gnome_font_result.rc is defined and gnome_font_result.rc != 0
+            echo "gnome-terminal font set."
+          elif command -v kgx &>/dev/null; then
+            gsettings set org.gnome.Console custom-font "'SFMono Nerd Font Regular 13'"
+            gsettings set org.gnome.Console use-system-font false
+            echo "GNOME Console font set."
+          else
+            echo "No supported terminal found. Set font manually in your terminal preferences."
+          fi
+
+    - name: Note about terminal font
+      debug:
+        msg: >-
+          Terminal detected: {{ terminal_bin.stdout }}.
+          To apply the terminal font after login run: bash ~/.config/set-terminal-font.sh
 
   # ── Handlers ────────────────────────────────────────────────────────────────
   handlers:
