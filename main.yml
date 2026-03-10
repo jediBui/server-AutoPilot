@@ -11,6 +11,12 @@
     target_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
     user_home: "{{ '/home/' + target_user if target_user != 'root' else '/root' }}"
 
+  vars_prompt:
+    - name: rdp_password
+      prompt: "RDP password (used to connect via Remote Desktop)"
+      private: yes
+      confirm: yes
+
   pre_tasks:
     - name: Verify running as root
       assert:
@@ -159,20 +165,7 @@
         group: "{{ target_user }}"
         mode: "0700"
 
-    - name: Enable RDP in gnome-remote-desktop (Desktop Sharing on)
-      become: no
-      shell: |
-        gsettings set org.gnome.desktop.remote-desktop.rdp enable true
-        gsettings set org.gnome.desktop.remote-desktop.rdp view-only false
-        gsettings set org.gnome.desktop.remote-desktop.rdp port {{ rdp_port }}
-      environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
-      ignore_errors: yes
-      register: gnome_rdp_gsettings
-
-    - name: Write gnome-remote-desktop keyfile fallback (headless safe)
-      # Applied when gsettings can't reach a live session bus.
-      # gnome-remote-desktop reads this on next graphical login.
+    - name: Write gnome-remote-desktop config (enable RDP, set port)
       copy:
         dest: "{{ user_home }}/.config/gnome-remote-desktop/rdp.conf"
         owner: "{{ target_user }}"
@@ -183,6 +176,17 @@
           enable=true
           view-only=false
           port={{ rdp_port }}
+
+    - name: Set RDP credentials via grdctl
+      become: no
+      shell: |
+        grdctl rdp enable
+        grdctl rdp set-credentials "{{ target_user }}" "{{ rdp_password }}"
+        grdctl rdp disable-view-only
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['user_uid'] }}"
+      ignore_errors: yes
 
     - name: Generate self-signed TLS cert for RDP (required by gnome-remote-desktop)
       command: >
@@ -205,13 +209,14 @@
         - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
       ignore_errors: yes
 
-    - name: Point gnome-remote-desktop at the TLS cert
+    - name: Point gnome-remote-desktop at the TLS cert via grdctl
       become: no
       shell: |
-        gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
-        gsettings set org.gnome.desktop.remote-desktop.rdp tls-key "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
+        grdctl rdp set-tls-cert "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+        grdctl rdp set-tls-key "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
       environment:
         DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['user_uid'] }}"
       ignore_errors: yes
 
     - name: Enable gnome-remote-desktop to autostart on login
