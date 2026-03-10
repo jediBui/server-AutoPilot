@@ -1,5 +1,5 @@
 ---
-- name: TARS System Initialization
+- name: System Initialization
   hosts: localhost
   connection: local
   become: yes
@@ -11,12 +11,12 @@
     theme_dir: "{{ getent_passwd[ansible_env.SUDO_USER | default(ansible_user_id)].4 }}/.config/starship_themes"
 
   tasks:
-    - name: TARS | Gathering user facts
+    - name: Gathering user facts
       getent:
         database: passwd
         key: "{{ target_user }}"
 
-    - name: TARS | Installing system packages
+    - name: Installing system packages
       apt:
         name:
           - curl
@@ -31,7 +31,7 @@
         state: present
         update_cache: yes
 
-    - name: TARS | Creating directory structure
+    - name: Creating directory structure
       file:
         path: "{{ item }}"
         state: directory
@@ -43,7 +43,7 @@
         - "{{ theme_dir }}"
         - "{{ target_home }}/.ssh"
 
-    - name: TARS | Downloading SF Mono Powerline fonts
+    - name: Downloading SF Mono Powerline fonts
       get_url:
         url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
         dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
@@ -54,12 +54,12 @@
         - "Bold"
       register: font_download
 
-    - name: TARS | Updating font cache
+    - name: Updating font cache
       become_user: "{{ target_user }}"
       command: fc-cache -f "{{ font_dir }}"
       when: font_download.changed
 
-    - name: TARS | Configuring Firewall
+    - name: Configuring Firewall
       ufw:
         rule: allow
         port: "{{ item.port }}"
@@ -68,11 +68,11 @@
         - { port: '22', proto: 'tcp' }
         - { port: '3389', proto: 'tcp' }
 
-    - name: TARS | Enabling UFW
+    - name: Enabling UFW
       ufw:
         state: enabled
 
-    - name: TARS | Importing GitHub SSH Keys
+    - name: Importing GitHub SSH Keys
       get_url:
         url: "https://github.com/{{ gh_user }}.keys"
         dest: "{{ target_home }}/.ssh/authorized_keys"
@@ -80,7 +80,7 @@
         group: "{{ target_user }}"
         mode: '0600'
 
-    - name: TARS | Hardening SSH Configuration
+    - name: Hardening SSH Configuration
       copy:
         dest: /etc/ssh/sshd_config.d/99-hardened.conf
         content: |
@@ -89,7 +89,7 @@
           PermitRootLogin prohibit-password
       notify: Restart SSH
 
-    - name: TARS | Generating Starship Themes
+    - name: Generating Starship Themes
       copy:
         dest: "{{ theme_dir }}/{{ item.name }}.toml"
         owner: "{{ target_user }}"
@@ -114,7 +114,7 @@
         - { name: 'frappe',  dir: '#8caaee', char: '#a6d189', git: '#ca9ee6' }
         - { name: 'mocha',   dir: '#89b4fa', char: '#a6e3a1', git: '#cba6f7' }
 
-    - name: TARS | Setting default Starship theme
+    - name: Setting default Starship theme
       file:
         src: "{{ theme_dir }}/onedark.toml"
         dest: "{{ target_home }}/.config/starship.toml"
@@ -122,7 +122,7 @@
         force: yes
         owner: "{{ target_user }}"
 
-    - name: TARS | Updating .bashrc
+    - name: Updating .bashrc
       blockinfile:
         path: "{{ target_home }}/.bashrc"
         marker: "# {mark} TARS SYSTEM CONFIG"
