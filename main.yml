@@ -59,6 +59,25 @@
         group: "{{ target_user }}"
         mode: "0600"
 
+    # ── Core Applications ─────────────────────────────────────────────────────
+    - name: Install core packages
+      apt:
+        name:
+          - curl
+          - git
+          - openssh-server
+          - fzf
+          - ufw
+          - qemu-guest-agent
+          - wget
+          - unzip
+          - fontconfig
+          - dconf-cli
+          - gnome-tweaks
+          - openssl
+        state: present
+        update_cache: no
+
     - name: Disable SSH password authentication
       lineinfile:
         path: /etc/ssh/sshd_config
@@ -83,25 +102,6 @@
         line: "PubkeyAuthentication yes"
         state: present
       notify: Restart SSH
-
-    # ── Core Applications ─────────────────────────────────────────────────────
-    - name: Install core packages
-      apt:
-        name:
-          - curl
-          - git
-          - openssh-server
-          - fzf
-          - ufw
-          - qemu-guest-agent
-          - wget
-          - unzip
-          - fontconfig
-          - dconf-cli
-          - gnome-tweaks
-          - openssl
-        state: present
-        update_cache: no
 
     - name: Write Google Chrome install script
       copy:
