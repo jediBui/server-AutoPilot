@@ -23,7 +23,7 @@ if ! command -v ansible-playbook &>/dev/null; then
   apt-get update -qq
   apt-get install -y -qq software-properties-common
   add-apt-repository --yes --update ppa:ansible/ansible
-  apt-get install -y -qq ansible
+  apt-get install -y -qq ansible, curl
 fi
 
 # ── Clear any leftover Chrome repo conflicts ──────────────────────────────────
