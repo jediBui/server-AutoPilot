@@ -142,36 +142,46 @@
       changed_when: false
 
     # ── 6. GNOME Terminal Font ────────────────────────────────────────────────
+    # gsettings requires DBUS even for reads — pass the session bus explicitly.
     - name: Get default GNOME Terminal profile UUID
-      command: >
+      shell: >
         sudo -u {{ target_user }}
-        gsettings get org.gnome.terminal.ProfilesList default
+        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
+        gsettings get org.gnome.terminal.ProfilesList default | tr -d "'"
       register: gnome_profile_raw
       changed_when: false
-      when: has_gnome
+      failed_when: false
+      when: has_gnome and dbus_socket.stat.exists
+
+    - name: Warn if GNOME Terminal profile UUID could not be read
+      debug:
+        msg: "TARS: Could not read GNOME Terminal profile — font will need to be set manually after first login."
+      when: has_gnome and (not dbus_socket.stat.exists or gnome_profile_raw.rc | default(1) != 0)
 
     - name: Parse GNOME Terminal profile UUID
       set_fact:
-        gnome_profile: "{{ gnome_profile_raw.stdout | replace(\"'\", '') | trim }}"
-      when: has_gnome
+        gnome_profile: "{{ gnome_profile_raw.stdout | trim }}"
+      when: has_gnome and dbus_socket.stat.exists and gnome_profile_raw.rc | default(1) == 0
 
     - name: Disable system font in GNOME Terminal profile
       command: >
         sudo -u {{ target_user }}
+        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
         gsettings set
         "org.gnome.terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
         use-system-font false
       changed_when: false
-      when: has_gnome
+      when: has_gnome and dbus_socket.stat.exists and gnome_profile is defined
 
     - name: Set SF Mono Nerd Font as default in GNOME Terminal profile
       command: >
         sudo -u {{ target_user }}
+        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
         gsettings set
         "org.gnome.terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
         font "'SFMono Nerd Font 12'"
       changed_when: false
-      when: has_gnome
+      when: has_gnome and dbus_socket.stat.exists and gnome_profile is defined
 
     # ── 7. Services & Firewall ────────────────────────────────────────────────
     - name: Enable and start qemu-guest-agent
