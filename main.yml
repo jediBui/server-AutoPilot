@@ -5,9 +5,11 @@
   become: true
   vars:
     gh_user: "jediBui"
-    target_user: "{{ lookup('env', 'USER') }}"
-    target_home: "{{ lookup('env', 'HOME') }}"
-    font_dir: "{{ lookup('env', 'HOME') }}/.local/share/fonts"
+    # Safely determine the user who invoked sudo, or fallback to current user
+    target_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
+    # Use expansion to reliably get the home directory regardless of sudo environment
+    target_home: "~{{ target_user }}"
+    font_dir: "{{ target_home }}/.local/share/fonts"
     themes:
       - { name: "onedark", dir: "#61afef", char: "#98c379", git: "#c678dd" }
       - { name: "frappe",  dir: "#8caaee", char: "#a6d189", git: "#ca9ee6" }
@@ -21,24 +23,48 @@
       changed_when: false
 
     - name: TARS | Detect GNOME Terminal Profile
-      set_fact:
-        terminal_profile: "{{ lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default' ) | replace(\"'\", \"\") }}"
+      # Properly accessing the user's D-Bus session when running as root
+      command: >
+        su - {{ target_user }} -c "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {{ target_user }})/bus gsettings get org.gnome.Terminal.ProfilesList default"
+      register: gsettings_output
       when: gnome_check.rc == 0
+      changed_when: false
+      ignore_errors: true
+
+    - name: TARS | Set Terminal Profile Fact
+      set_fact:
+        terminal_profile: "{{ gsettings_output.stdout | replace(\"'\", \"\") }}"
+      when: 
+        - gnome_check.rc == 0
+        - gsettings_output.rc == 0
 
     - name: TARS | Adding Repositories and Keys
       block:
-        - apt_key:
+        - name: Download Google Chrome signing key
+          get_url:
             url: https://dl.google.com/linux/linux_signing_key.pub
-            state: present
-            keyring: /usr/share/keyrings/google-chrome.gpg
-        - apt_repository:
-            repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main"
+            dest: /usr/share/keyrings/google-chrome.asc
+            mode: '0644'
+            
+        - name: Add Google Chrome repository
+          apt_repository:
+            repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] http://dl.google.com/linux/chrome/deb/ stable main"
             state: present
             filename: google-chrome
 
     - name: TARS | Installing Base Packages
       apt:
-        name: [curl, git, openssh-server, bash-completion, fzf, ufw, qemu-guest-agent, gnome-remote-desktop, fontconfig, google-chrome-stable]
+        name: 
+          - curl
+          - git
+          - openssh-server
+          - bash-completion
+          - fzf
+          - ufw
+          - qemu-guest-agent
+          - gnome-remote-desktop
+          - fontconfig
+          - google-chrome-stable
         state: present
         update_cache: true
 
@@ -49,43 +75,55 @@
 
     - name: TARS | Font Setup
       block:
-        - file:
+        - name: Create font directory
+          file:
             path: "{{ font_dir }}"
             state: directory
             owner: "{{ target_user }}"
             mode: '0755'
-        - get_url:
+            
+        - name: Download SF-Mono-Powerline fonts
+          get_url:
             url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
             dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
             owner: "{{ target_user }}"
+            mode: '0644'
           loop: ["Regular", "Bold"]
           register: font_dl
-        - command: fc-cache -f "{{ font_dir }}"
+          
+        - name: Update font cache
+          command: fc-cache -f "{{ font_dir }}"
           become_user: "{{ target_user }}"
           when: font_dl.changed
 
     - name: TARS | Configure GNOME Terminal Font
       become_user: "{{ target_user }}"
-      dconf:
-        key: "/org/gnome/terminal/legacy/profiles:/:{{ terminal_profile }}/font"
-        value: "'SF Mono Powerline 12'"
+      # Execute dconf through the user's dbus session
+      command: >
+        su - {{ target_user }} -c "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u {{ target_user }})/bus dconf write /org/gnome/terminal/legacy/profiles:/:{{ terminal_profile }}/font \"'SF Mono Powerline 12'\""
       when: 
         - gnome_check.rc == 0
         - terminal_profile is defined
+        - terminal_profile | length > 0
 
     - name: TARS | Network and Security
       block:
-        - ufw:
+        - name: Configure UFW rules
+          ufw:
             rule: allow
             port: "{{ item }}"
             proto: tcp
           loop: ['22', '3389']
-        - systemd:
+          
+        - name: Enable and start services
+          systemd:
             name: "{{ item }}"
             enabled: yes
             state: started
           loop: ['ufw', 'qemu-guest-agent']
-        - authorized_key:
+          
+        - name: Add GitHub authorized key
+          authorized_key:
             user: "{{ target_user }}"
             key: "https://github.com/{{ gh_user }}.keys"
 
@@ -96,7 +134,15 @@
           PasswordAuthentication no
           PubkeyAuthentication yes
           PermitRootLogin prohibit-password
+        mode: '0644'
       notify: Restart SSH
+
+    - name: TARS | Create Starship Themes Directory
+      become_user: "{{ target_user }}"
+      file:
+        path: "{{ target_home }}/.config/starship_themes"
+        state: directory
+        mode: '0755'
 
     - name: TARS | Starship Themes Generation
       become_user: "{{ target_user }}"
@@ -118,16 +164,18 @@
           [git_status]
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
+        mode: '0644'
       loop: "{{ themes }}"
 
     - name: TARS | Bashrc and Default Theme
       become_user: "{{ target_user }}"
       block:
-        - file:
-            path: "{{ target_home }}/.config/starship_themes"
-            state: directory
-        - copy:
-            dest: "{{ target_home }}/.bashrc"
+        - name: Configure .bashrc
+          blockinfile:
+            path: "{{ target_home }}/.bashrc"
+            marker: "# {mark} TARS MANAGED BLOCK"
+            create: yes
+            mode: '0644'
             content: |
               [ -z "$PS1" ] && return
               HISTCONTROL=ignoreboth
@@ -137,7 +185,9 @@
               alias ll='ls -alF --color=auto'
               alias ..='cd ..'
               alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
-        - file:
+              
+        - name: Link default Starship theme
+          file:
             src: "{{ target_home }}/.config/starship_themes/onedark.toml"
             dest: "{{ target_home }}/.config/starship.toml"
             state: link
