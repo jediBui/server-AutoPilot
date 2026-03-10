@@ -93,23 +93,31 @@
         state: present
         update_cache: no
 
-    - name: Install Google Chrome (add signing key)
-      apt_key:
+    - name: Download Google Chrome signing key (apt-key-free method)
+      get_url:
         url: https://dl.google.com/linux/linux_signing_key.pub
-        state: present
-        keyring: /usr/share/keyrings/google-chrome.gpg
+        dest: /tmp/google-chrome.pub
+        mode: "0644"
+
+    - name: Dearmor and install Google Chrome signing key
+      shell: |
+        gpg --dearmor < /tmp/google-chrome.pub > /usr/share/keyrings/google-chrome.gpg
+        chmod 644 /usr/share/keyrings/google-chrome.gpg
+      args:
+        creates: /usr/share/keyrings/google-chrome.gpg
 
     - name: Add Google Chrome apt repository
-      apt_repository:
-        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"
-        filename: google-chrome
-        state: present
-        update_cache: yes
+      copy:
+        dest: /etc/apt/sources.list.d/google-chrome.list
+        content: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main\n"
+        mode: "0644"
+      notify: Update apt cache
 
     - name: Install Google Chrome
       apt:
         name: google-chrome-stable
         state: present
+        update_cache: yes
 
     # ── UFW Firewall ──────────────────────────────────────────────────────────
     - name: Configure and enable UFW
@@ -337,3 +345,7 @@
       systemd:
         name: sshd
         state: restarted
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
