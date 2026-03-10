@@ -1,162 +1,79 @@
----
 - name: TARS System Initialization
   hosts: localhost
   connection: local
-  become: yes
   vars:
     gh_user: "jediBui"
-    target_user: "{{ ansible_env.SUDO_USER | default(ansible_user_id) }}"
-    target_home: "{{ getent_passwd[ansible_env.SUDO_USER | default(ansible_user_id)].4 }}"
-    font_dir: "{{ getent_passwd[ansible_env.SUDO_USER | default(ansible_user_id)].4 }}/.local/share/fonts"
-    theme_dir: "{{ getent_passwd[ansible_env.SUDO_USER | default(ansible_user_id)].4 }}/.config/starship_themes"
+    theme_dir: "{{ ansible_env.HOME }}/.config/starship_themes"
+    themes:
+      - { name: "onedark", dir: "#61afef", char: "#98c379", git: "#c678dd" }
+      - { name: "frappe",  dir: "#8caaee", char: "#a6d189", git: "#ca9ee6" }
+      - { name: "mocha",   dir: "#89b4fa", char: "#a6e3a1", git: "#cba6f7" }
 
   tasks:
-    - name: TARS | Gathering user facts
-      getent:
-        database: passwd
-        key: "{{ target_user }}"
-
-    - name: TARS | Adding Google Chrome GPG key
-      get_url:
-        url: https://dl.google.com/linux/linux_signing_key.pub
-        dest: /usr/share/keyrings/google-chrome.asc
-        mode: '0644'
-
-    - name: TARS | Adding Google Chrome repository
-      apt_repository:
-        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] http://dl.google.com/linux/chrome/deb/ stable main"
-        state: present
-        filename: google-chrome
-
-    - name: TARS | Installing system packages and Chrome
-      apt:
-        name:
-          - google-chrome-stable
-          - curl
-          - git
-          - openssh-server
-          - bash-completion
-          - fzf
-          - ufw
-          - qemu-guest-agent
-          - gnome-remote-desktop
-          - fontconfig
-          - starship
-        state: present
-        update_cache: yes
-
-    - name: TARS | Creating directory structure
+    - name: TARS | Creating directory infrastructure
       file:
         path: "{{ item }}"
         state: directory
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
         mode: '0755'
       loop:
-        - "{{ font_dir }}"
         - "{{ theme_dir }}"
-        - "{{ target_home }}/.ssh"
+        - "{{ ansible_env.HOME }}/.ssh"
 
-    - name: TARS | Downloading SF Mono Powerline fonts
-      get_url:
-        url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
-        dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-      loop:
-        - "Regular"
-        - "Bold"
-      register: font_download
-
-    - name: TARS | Updating font cache
-      become_user: "{{ target_user }}"
-      command: fc-cache -f "{{ font_dir }}"
-      when: font_download.changed
-
-    - name: TARS | Configuring Firewall
-      ufw:
-        rule: allow
-        port: "{{ item.port }}"
-        proto: "{{ item.proto }}"
-      loop:
-        - { port: '22', proto: 'tcp' }
-        - { port: '3389', proto: 'tcp' }
-
-    - name: TARS | Enabling UFW
-      ufw:
-        state: enabled
-
-    - name: TARS | Importing GitHub SSH Keys
+    - name: TARS | Importing SSH keys from GitHub
       get_url:
         url: "https://github.com/{{ gh_user }}.keys"
-        dest: "{{ target_home }}/.ssh/authorized_keys"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
+        dest: "{{ ansible_env.HOME }}/.ssh/authorized_keys"
         mode: '0600'
 
-    - name: TARS | Hardening SSH Configuration
-      copy:
-        dest: /etc/ssh/sshd_config.d/99-hardened.conf
-        content: |
-          PasswordAuthentication no
-          PubkeyAuthentication yes
-          PermitRootLogin prohibit-password
-      notify: Restart SSH
+    - name: TARS | Checking for Starship HUD
+      stat:
+        path: /usr/local/bin/starship
+      register: starship_bin
+
+    - name: TARS | Installing Starship (Universal Binary)
+      shell: curl -sS https://starship.rs/install.sh | sh -s -- -y
+      when: not starship_bin.stat.exists
 
     - name: TARS | Generating Starship Themes
       copy:
         dest: "{{ theme_dir }}/{{ item.name }}.toml"
-        owner: "{{ target_user }}"
         content: |
           format = "$directory$git_branch$git_status$character"
           add_newline = false
           [directory]
           style = "bold {{ item.dir }}"
-          format = "[$path]($style) "
           [character]
           success_symbol = "[❯](bold {{ item.char }})"
           error_symbol = "[❯](bold #e06c75)"
           [git_branch]
           symbol = " "
           style = "bold {{ item.git }}"
-          format = "on [$symbol$branch]($style) "
           [git_status]
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
-      loop:
-        - { name: 'onedark', dir: '#61afef', char: '#98c379', git: '#c678dd' }
-        - { name: 'frappe',  dir: '#8caaee', char: '#a6d189', git: '#ca9ee6' }
-        - { name: 'mocha',   dir: '#89b4fa', char: '#a6e3a1', git: '#cba6f7' }
+      loop: "{{ themes }}"
 
-    - name: TARS | Setting default Starship theme
+    - name: TARS | Linking Default Theme
       file:
         src: "{{ theme_dir }}/onedark.toml"
-        dest: "{{ target_home }}/.config/starship.toml"
+        dest: "{{ ansible_env.HOME }}/.config/starship.toml"
         state: link
         force: yes
-        owner: "{{ target_user }}"
 
-    - name: TARS | Updating .bashrc
+    - name: TARS | Updating .bashrc (Aliases and Init)
       blockinfile:
-        path: "{{ target_home }}/.bashrc"
-        marker: "# {mark} TARS SYSTEM CONFIG"
+        path: "{{ ansible_env.HOME }}/.bashrc"
+        marker: "# {mark} TARS THEME ALIASES"
         block: |
-          [ -z "$PS1" ] && return
-          HISTCONTROL=ignoreboth
-          shopt -s histappend
-          HISTSIZE=10000
           eval "$(starship init bash)"
           alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark active."'
           alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Frappe active."'
           alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Mocha active."'
-          [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
-          bind '"\e[A": history-search-backward'
-          bind '"\e[B": history-search-forward'
           alias ll='ls -alF --color=auto'
-          alias ..='cd ..'
 
-  handlers:
-    - name: Restart SSH
-      service:
-        name: ssh
-        state: restarted
+    - name: TARS | Enabling Gnome Remote Desktop
+      shell: |
+        export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+        gsettings set org.gnome.desktop.remote-desktop.rdp screen-share-mode 'mirror-screen'
+        gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+      failed_when: false
