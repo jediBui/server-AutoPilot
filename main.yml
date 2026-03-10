@@ -78,9 +78,9 @@
       dconf:
         key: "/org/gnome/terminal/legacy/profiles:/:{{ item }}/font"
         value: "'SF Mono Powerline 12'"
+      loop: "{{ [lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default' ) | replace(\"'\", \"\")] }}"
       become: true
       become_user: "{{ target_user }}"
-      loop: "{{ [lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default' ) | replace(\"'\", \"\")] }}"
       when: gnome_check.rc == 0
 
     - name: TARS | Setting up Firewall
@@ -139,9 +139,9 @@
           [git_status]
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
+      loop: "{{ themes }}"
       become: true
       become_user: "{{ target_user }}"
-      loop: "{{ themes }}"
 
     - name: TARS | Writing .bashrc
       copy:
