@@ -141,6 +141,15 @@
       become_user: "{{ target_user }}"
       changed_when: false
 
+    # ── DBUS Session Socket Check (used by sections 6 & 8) ──────────────────
+    # gsettings requires a live user DBUS session. This may not exist on fresh
+    # systems before the first GUI login. Checked once here, reused throughout.
+    - name: Check if user DBUS session socket exists
+      stat:
+        path: "/run/user/{{ target_uid }}/bus"
+      register: dbus_socket
+      when: has_gnome
+
     # ── 6. GNOME Terminal Font ────────────────────────────────────────────────
     # gsettings requires DBUS even for reads — pass the session bus explicitly.
     - name: Get default GNOME Terminal profile UUID
@@ -206,15 +215,6 @@
         state: enabled
 
     # ── 8. GNOME Remote Desktop ───────────────────────────────────────────────
-    # Note: DBUS socket may not exist on fresh systems before first login.
-    # Tasks are guarded with failed_when: false to avoid hard failures.
-    - name: Check if user DBUS session socket exists
-      stat:
-        path: "/run/user/{{ target_uid }}/bus"
-      register: dbus_socket
-      when: has_gnome
-
-    - name: Set GNOME RDP screen-share-mode to mirror-screen
       command: >
         sudo -u {{ target_user }}
         env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
