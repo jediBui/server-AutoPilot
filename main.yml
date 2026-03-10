@@ -1,375 +1,339 @@
 ---
-# TARS System Provisioning Playbook
-# Run locally: ansible-playbook main.yml --ask-become-pass
-# Or via bootstrap.sh for a fully automated setup.
-
-- name: TARS System Configuration
+- name: Provision Ubuntu VM
   hosts: localhost
   connection: local
   become: true
-
   vars:
-    gh_user: "jediBui"
-    target_user: "{{ ansible_env.SUDO_USER | default(ansible_env.USER) }}"
-    target_home: "{{ '/home/' + (ansible_env.SUDO_USER | default(ansible_env.USER)) }}"
-    font_dir: "{{ target_home }}/.local/share/fonts"
-    theme_dir: "{{ target_home }}/.config/starship_themes"
-    starship_themes:
-      - name: onedark
-        dir: "#61afef"
-        char: "#98c379"
-        git: "#c678dd"
-      - name: frappe
-        dir: "#8caaee"
-        char: "#a6d189"
-        git: "#ca9ee6"
-      - name: mocha
-        dir: "#89b4fa"
-        char: "#a6e3a1"
-        git: "#cba6f7"
+    github_username: jediBui
+    rdp_port: 3389
+    starship_theme: catppuccin-frappe
+    font_size: 13
+    target_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
+    user_home: "{{ '/home/' + target_user if target_user != 'root' else '/root' }}"
+
+  pre_tasks:
+    - name: Verify running as root
+      assert:
+        that: ansible_user_id == "root"
+        fail_msg: "This playbook must be run as root (via sudo)"
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
 
   tasks:
-
-    # ── 1. Environment Detection ──────────────────────────────────────────────
-    - name: Check if GNOME is present
-      command: which gnome-shell
-      register: gnome_check
-      changed_when: false
-      failed_when: false
-
-    - name: Set has_gnome fact
-      set_fact:
-        has_gnome: "{{ gnome_check.rc == 0 }}"
-
-    - name: Get target user UID
-      getent:
-        database: passwd
-        key: "{{ target_user }}"
-      register: target_user_info
-
-    - name: Set target user UID fact
-      set_fact:
-        target_uid: "{{ target_user_info.ansible_facts.getent_passwd[target_user][2] }}"
-
-    # ── 2. Google Chrome Repository ───────────────────────────────────────────
-    - name: Check if Google Chrome is already installed
-      command: which google-chrome-stable
-      register: chrome_check
-      changed_when: false
-      failed_when: false
-
-    - name: Download Google Chrome GPG key
-      shell: |
-        curl -fSsL https://dl.google.com/linux/linux_signing_key.pub \
-          | gpg --dearmor \
-          | tee /usr/share/keyrings/google-chrome.gpg > /dev/null
-      when: chrome_check.rc != 0
-      args:
-        creates: /usr/share/keyrings/google-chrome.gpg
-
-    - name: Add Google Chrome apt repository
-      copy:
-        dest: /etc/apt/sources.list.d/google-chrome.list
-        content: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main\n"
-        owner: root
-        group: root
-        mode: "0644"
-      when: chrome_check.rc != 0
-
-    # ── 3. Package Installation ───────────────────────────────────────────────
-    - name: Update apt cache and install packages
-      apt:
-        name:
-          - curl
-          - git
-          - openssh-server
-          - bash-completion
-          - fzf
-          - ufw
-          - qemu-guest-agent
-          - gnome-remote-desktop
-          - fontconfig
-          - google-chrome-stable
-        state: present
-        update_cache: true
-      register: apt_result
+    # ── SSH Keys ──────────────────────────────────────────────────────────────
+    - name: Fetch SSH keys from GitHub
+      uri:
+        url: "https://github.com/{{ github_username }}.keys"
+        return_content: yes
+        status_code: 200
+      register: github_keys
       retries: 3
       delay: 5
-      until: apt_result is succeeded
 
-    # ── 4. Install Starship ───────────────────────────────────────────────────
-    - name: Check if Starship is already installed
-      command: which starship
-      register: starship_check
-      changed_when: false
-      failed_when: false
-
-    - name: Install Starship prompt
-      shell: curl -sS https://starship.rs/install.sh | sh -s -- --yes
-      when: starship_check.rc != 0
-
-    # ── 5. SF Mono Powerline Fonts ────────────────────────────────────────────
-    - name: Create font directory
+    - name: Ensure .ssh directory exists for target user
       file:
-        path: "{{ font_dir }}"
-        state: directory
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0755"
-
-    - name: Download SF Mono Powerline fonts
-      get_url:
-        url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
-        dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0644"
-      loop:
-        - Regular
-        - Bold
-
-    - name: Download SF Mono Nerd Font Regular
-      get_url:
-        url: "https://github.com/epk/SF-Mono-Nerd-Font/raw/master/SFMono%20Regular%20Nerd%20Font%20Complete.otf"
-        dest: "{{ font_dir }}/SFMono Regular Nerd Font Complete.otf"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0644"
-
-    - name: Rebuild font cache
-      command: fc-cache -f "{{ font_dir }}"
-      become_user: "{{ target_user }}"
-      changed_when: false
-
-    # ── DBUS Session Socket Check (used by sections 6 & 8) ──────────────────
-    # gsettings requires a live user DBUS session. This may not exist on fresh
-    # systems before the first GUI login. Checked once here, reused throughout.
-    - name: Check if user DBUS session socket exists
-      stat:
-        path: "/run/user/{{ target_uid }}/bus"
-      register: dbus_socket
-      when: has_gnome
-
-    # ── 6. GNOME Terminal Font ────────────────────────────────────────────────
-    # gsettings requires DBUS even for reads — pass the session bus explicitly.
-    - name: Get default GNOME Terminal profile UUID
-      shell: >
-        sudo -u {{ target_user }}
-        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
-        gsettings get org.gnome.terminal.ProfilesList default | tr -d "'"
-      register: gnome_profile_raw
-      changed_when: false
-      failed_when: false
-      when: has_gnome and dbus_socket.stat.exists
-
-    - name: Warn if GNOME Terminal profile UUID could not be read
-      debug:
-        msg: "TARS: Could not read GNOME Terminal profile — font will need to be set manually after first login."
-      when: has_gnome and (not dbus_socket.stat.exists or gnome_profile_raw.rc | default(1) != 0)
-
-    - name: Parse GNOME Terminal profile UUID
-      set_fact:
-        gnome_profile: "{{ gnome_profile_raw.stdout | trim }}"
-      when: has_gnome and dbus_socket.stat.exists and gnome_profile_raw.rc | default(1) == 0
-
-    - name: Disable system font in GNOME Terminal profile
-      command: >
-        sudo -u {{ target_user }}
-        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
-        gsettings set
-        "org.gnome.terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
-        use-system-font false
-      changed_when: false
-      when: has_gnome and dbus_socket.stat.exists and gnome_profile is defined
-
-    - name: Set SF Mono Nerd Font as default in GNOME Terminal profile
-      command: >
-        sudo -u {{ target_user }}
-        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
-        gsettings set
-        "org.gnome.terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
-        font "'SFMono Nerd Font 12'"
-      changed_when: false
-      when: has_gnome and dbus_socket.stat.exists and gnome_profile is defined
-
-    # ── 7. Services & Firewall ────────────────────────────────────────────────
-    - name: Enable and start qemu-guest-agent
-      systemd:
-        name: qemu-guest-agent
-        state: started
-        enabled: true
-
-    - name: Allow SSH through UFW
-      community.general.ufw:
-        rule: allow
-        name: OpenSSH
-
-    - name: Allow RDP (3389/tcp) through UFW
-      community.general.ufw:
-        rule: allow
-        port: "3389"
-        proto: tcp
-
-    - name: Enable UFW
-      community.general.ufw:
-        state: enabled
-
-    # ── 8. GNOME Remote Desktop ───────────────────────────────────────────────
-      command: >
-        sudo -u {{ target_user }}
-        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
-        gsettings set org.gnome.desktop.remote-desktop.rdp screen-share-mode mirror-screen
-      changed_when: false
-      failed_when: false
-      when: has_gnome and dbus_socket.stat.exists
-
-    - name: Enable GNOME Remote Desktop RDP
-      command: >
-        sudo -u {{ target_user }}
-        env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{{ target_uid }}/bus
-        gsettings set org.gnome.desktop.remote-desktop.rdp enable true
-      changed_when: false
-      failed_when: false
-      when: has_gnome and dbus_socket.stat.exists
-
-    - name: Warn if DBUS socket not found (RDP gsettings skipped)
-      debug:
-        msg: >
-          TARS: DBUS session socket not found for {{ target_user }}.
-          GNOME RDP gsettings will need to be applied after first GUI login.
-          Run: gsettings set org.gnome.desktop.remote-desktop.rdp enable true
-      when: has_gnome and not dbus_socket.stat.exists
-
-    # ── 9. SSH Hardening & Key Import ─────────────────────────────────────────
-    - name: Ensure .ssh directory exists with correct permissions
-      file:
-        path: "{{ target_home }}/.ssh"
+        path: "{{ user_home }}/.ssh"
         state: directory
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
         mode: "0700"
 
-    - name: Fetch GitHub SSH public keys
-      uri:
-        url: "https://github.com/{{ gh_user }}.keys"
-        return_content: true
-      register: github_keys
-      retries: 3
-      delay: 5
-      until: github_keys.status == 200
-
-    - name: Ensure GitHub keys are in authorized_keys (idempotent)
-      lineinfile:
-        path: "{{ target_home }}/.ssh/authorized_keys"
-        line: "{{ item }}"
-        create: true
+    - name: Write GitHub SSH keys to authorized_keys
+      copy:
+        content: "{{ github_keys.content }}"
+        dest: "{{ user_home }}/.ssh/authorized_keys"
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
         mode: "0600"
-      loop: "{{ github_keys.content.strip().splitlines() }}"
-      when: github_keys.content.strip() != ''
 
-    - name: Deploy hardened SSH config
-      copy:
-        dest: /etc/ssh/sshd_config.d/99-hardened.conf
-        content: |
-          PasswordAuthentication no
-          PubkeyAuthentication yes
-          PermitRootLogin prohibit-password
-        owner: root
-        group: root
-        mode: "0644"
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+        state: present
+        backup: yes
       notify: Restart SSH
 
-    # ── 10. Starship Themes ───────────────────────────────────────────────────
-    - name: Create Starship themes directory
+    - name: Disable SSH challenge-response authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?ChallengeResponseAuthentication"
+        line: "ChallengeResponseAuthentication no"
+        state: present
+      notify: Restart SSH
+
+    - name: Ensure PubkeyAuthentication is enabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PubkeyAuthentication"
+        line: "PubkeyAuthentication yes"
+        state: present
+      notify: Restart SSH
+
+    # ── Core Applications ─────────────────────────────────────────────────────
+    - name: Install core packages
+      apt:
+        name:
+          - curl
+          - git
+          - openssh-server
+          - fzf
+          - ufw
+          - qemu-guest-agent
+          - wget
+          - unzip
+          - fontconfig
+          - dconf-cli
+          - gnome-tweaks
+          - openssl
+        state: present
+        update_cache: no
+
+    - name: Install Google Chrome (add signing key)
+      apt_key:
+        url: https://dl.google.com/linux/linux_signing_key.pub
+        state: present
+        keyring: /usr/share/keyrings/google-chrome.gpg
+
+    - name: Add Google Chrome apt repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"
+        filename: google-chrome
+        state: present
+        update_cache: yes
+
+    - name: Install Google Chrome
+      apt:
+        name: google-chrome-stable
+        state: present
+
+    # ── UFW Firewall ──────────────────────────────────────────────────────────
+    - name: Configure and enable UFW
+      shell: |
+        ufw --force reset
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw allow 22/tcp comment 'SSH'
+        ufw allow {{ rdp_port }}/tcp comment 'RDP'
+        ufw --force enable
+      changed_when: true
+
+    # ── QEMU Guest Agent ──────────────────────────────────────────────────────
+    - name: Enable and start qemu-guest-agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: yes
+        state: started
+
+    # ── RDP / Desktop Sharing (native GNOME RDP — Ubuntu 22.04+) ─────────────
+    # This is the built-in gnome-remote-desktop service visible in
+    # Settings → Sharing → Desktop Sharing. No third-party software needed.
+
+    - name: Install gnome-remote-desktop
+      apt:
+        name: gnome-remote-desktop
+        state: present
+
+    - name: Ensure gnome-remote-desktop config directory exists
       file:
-        path: "{{ theme_dir }}"
+        path: "{{ user_home }}/.config/gnome-remote-desktop"
+        state: directory
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0700"
+
+    - name: Enable RDP in gnome-remote-desktop (Desktop Sharing on)
+      become: no
+      shell: |
+        gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+        gsettings set org.gnome.desktop.remote-desktop.rdp view-only false
+        gsettings set org.gnome.desktop.remote-desktop.rdp port {{ rdp_port }}
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+      ignore_errors: yes
+      register: gnome_rdp_gsettings
+
+    - name: Write gnome-remote-desktop keyfile fallback (headless safe)
+      # Applied when gsettings can't reach a live session bus.
+      # gnome-remote-desktop reads this on next graphical login.
+      copy:
+        dest: "{{ user_home }}/.config/gnome-remote-desktop/rdp.conf"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0600"
+        content: |
+          [rdp]
+          enable=true
+          view-only=false
+          port={{ rdp_port }}
+
+    - name: Generate self-signed TLS cert for RDP (required by gnome-remote-desktop)
+      command: >
+        openssl req -new -x509 -days 3650 -nodes
+        -out {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt
+        -keyout {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key
+        -subj "/CN={{ ansible_hostname }}"
+      args:
+        creates: "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+      become: no
+
+    - name: Set correct ownership on RDP TLS cert
+      file:
+        path: "{{ item }}"
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
+        mode: "0600"
+      loop:
+        - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+        - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
+      ignore_errors: yes
+
+    - name: Point gnome-remote-desktop at the TLS cert
+      become: no
+      shell: |
+        gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert \
+          "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+        gsettings set org.gnome.desktop.remote-desktop.rdp tls-key \
+          "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+      ignore_errors: yes
+
+    - name: Enable and start gnome-remote-desktop user service (best-effort)
+      become: no
+      shell: |
+        systemctl --user enable gnome-remote-desktop.service
+        systemctl --user start  gnome-remote-desktop.service
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid }}"
+      ignore_errors: yes
+
+    - name: Note — RDP will be fully active after first graphical login
+      debug:
+        msg: >
+          gnome-remote-desktop is installed and configured for port {{ rdp_port }}.
+          The service starts automatically on graphical login (it is a user-session service,
+          not a system service). Desktop Sharing and Remote Control will appear enabled
+          in Settings → Sharing after the first login.
+
+    # ── SF Mono Nerd Font ─────────────────────────────────────────────────────
+    - name: Create fonts directory
+      file:
+        path: /usr/local/share/fonts/SFMonoNerd
+        state: directory
+        mode: "0755"
+
+    - name: Clone SF-Mono-Nerd-Font repository
+      git:
+        repo: https://github.com/epk/SF-Mono-Nerd-Font.git
+        dest: /tmp/SF-Mono-Nerd-Font
+        depth: 1
+
+    - name: Copy Regular font files only
+      shell: |
+        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f \( -name "*.ttf" -o -name "*.otf" \) \
+          -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
+      args:
+        creates: /usr/local/share/fonts/SFMonoNerd/.installed
+
+    - name: Mark fonts as installed
+      file:
+        path: /usr/local/share/fonts/SFMonoNerd/.installed
+        state: touch
+
+    - name: Rebuild font cache
+      command: fc-cache -fv
+      changed_when: false
+
+    # ── Starship Prompt ───────────────────────────────────────────────────────
+    - name: Check if Starship is already installed
+      stat:
+        path: /usr/local/bin/starship
+      register: starship_binary
+
+    - name: Download and install Starship
+      shell: |
+        curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
+      when: not starship_binary.stat.exists
+      args:
+        creates: /usr/local/bin/starship
+
+    - name: Ensure starship config directory exists
+      file:
+        path: "{{ user_home }}/.config"
         state: directory
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
         mode: "0755"
 
-    - name: Generate Starship lean theme configs
-      copy:
-        dest: "{{ theme_dir }}/{{ item.name }}.toml"
+    - name: Download Catppuccin Frappe starship theme
+      get_url:
+        url: "https://raw.githubusercontent.com/catppuccin/starship/main/themes/frappe.toml"
+        dest: "{{ user_home }}/.config/starship.toml"
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
         mode: "0644"
-        content: |
-          format = "$directory$git_branch$git_status$character"
-          add_newline = false
-          [directory]
-          style = "bold {{ item.dir }}"
-          format = "[$path]($style) "
-          [character]
-          success_symbol = "[❯](bold {{ item.char }})"
-          error_symbol = "[❯](bold #e06c75)"
-          [git_branch]
-          symbol = " "
-          style = "bold {{ item.git }}"
-          format = "on [$symbol$branch]($style) "
-          [git_status]
-          style = "bold #e06c75"
-          format = "([$all_status$ahead_behind]($style) )"
-      loop: "{{ starship_themes }}"
+        force: no
 
-    - name: Symlink default theme (onedark)
-      file:
-        src: "{{ theme_dir }}/onedark.toml"
-        dest: "{{ target_home }}/.config/starship.toml"
-        state: link
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        force: true
-
-    # ── 11. .bashrc Configuration ─────────────────────────────────────────────
-    - name: Backup existing .bashrc
-      copy:
-        src: "{{ target_home }}/.bashrc"
-        dest: "{{ target_home }}/.bashrc.bak"
-        remote_src: true
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0644"
-      failed_when: false
-
-    - name: Deploy TARS .bashrc
-      copy:
-        dest: "{{ target_home }}/.bashrc"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0644"
-        content: |
-          # TARS SYSTEM CONFIG
-          [ -z "$PS1" ] && return
-          HISTCONTROL=ignoreboth
-          shopt -s histappend
-          HISTSIZE=10000
-
+    - name: Initialise Starship in .bashrc
+      blockinfile:
+        path: "{{ user_home }}/.bashrc"
+        marker: "# {mark} STARSHIP PROMPT"
+        block: |
+          # Starship prompt
+          export STARSHIP_CONFIG="$HOME/.config/starship.toml"
           eval "$(starship init bash)"
+        create: yes
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
 
-          # Theme Swapping
-          alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark (Lean) active."'
-          alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Catppuccin Frappe (Lean) active."'
-          alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Catppuccin Mocha (Lean) active."'
+    - name: Initialise Starship in .bash_profile (login shells)
+      blockinfile:
+        path: "{{ user_home }}/.bash_profile"
+        marker: "# {mark} STARSHIP PROMPT"
+        block: |
+          [[ -f ~/.bashrc ]] && source ~/.bashrc
+        create: yes
+        owner: "{{ target_user }}"
+        group: "{{ target_user }}"
 
-          # FZF & History
-          [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
-          bind '"\e[A": history-search-backward'
-          bind '"\e[B": history-search-forward'
+    # ── GNOME Terminal font configuration (best-effort, needs active session) ─
+    - name: Check if GNOME Terminal is available
+      command: which gnome-terminal
+      register: gnome_terminal_check
+      ignore_errors: yes
+      changed_when: false
 
-          alias ll='ls -alF --color=auto'
-          alias ..='cd ..'
+    - name: Configure GNOME Terminal font via dconf (requires user session)
+      become: no
+      shell: |
+        PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
+        dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular {{ font_size }}'"
+        dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+      when: gnome_terminal_check.rc == 0
+      ignore_errors: yes
+      register: gnome_font_result
 
-    - name: TARS - System fully configured
+    - name: Note about font config
       debug:
         msg: >
-          TARS: System fully configured. Google Chrome is installed and SF Mono is set.
-          Ready for departure.
+          GNOME Terminal font could not be set automatically (requires an active graphical session).
+          Run manually after login:
+            PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
+            dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular 13'"
+            dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
+      when: gnome_font_result is defined and gnome_font_result.rc is defined and gnome_font_result.rc != 0
 
+  # ── Handlers ────────────────────────────────────────────────────────────────
   handlers:
     - name: Restart SSH
       systemd:
-        name: ssh
+        name: sshd
         state: restarted
