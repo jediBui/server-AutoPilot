@@ -19,11 +19,16 @@ fi
 # Keep track of the real user who invoked sudo
 REAL_USER="${SUDO_USER:-$USER}"
 
+# ── System update ────────────────────────────────────────────────────────────
+echo "Updating system..."
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+
 # ── Install Ansible if missing ────────────────────────────────────────────────
 if ! command -v ansible-playbook &>/dev/null; then
   echo "Installing Ansible..."
   apt-get update -qq
-  apt-get install -y -qq software-properties-common
+  apt-get install -y -qq curl software-properties-common
   add-apt-repository --yes --update ppa:ansible/ansible
   apt-get install -y -qq ansible
 fi
