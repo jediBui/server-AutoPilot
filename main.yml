@@ -145,7 +145,7 @@
     - name: Get default GNOME Terminal profile UUID
       command: >
         sudo -u {{ target_user }}
-        gsettings get org.gnome.Terminal.ProfilesList default
+        gsettings get org.gnome.terminal.ProfilesList default
       register: gnome_profile_raw
       changed_when: false
       when: has_gnome
@@ -159,7 +159,7 @@
       command: >
         sudo -u {{ target_user }}
         gsettings set
-        "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
+        "org.gnome.terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
         use-system-font false
       changed_when: false
       when: has_gnome
@@ -168,7 +168,7 @@
       command: >
         sudo -u {{ target_user }}
         gsettings set
-        "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
+        "org.gnome.terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:{{ gnome_profile }}/"
         font "'SFMono Nerd Font 12'"
       changed_when: false
       when: has_gnome
