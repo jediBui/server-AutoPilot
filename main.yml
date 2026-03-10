@@ -14,7 +14,7 @@
   pre_tasks:
     - name: Verify running as root
       assert:
-        that: ansible_user_id == "root"
+        that: ansible_facts["user_id"] == "root"
         fail_msg: "This playbook must be run as root (via sudo)"
 
     - name: Purge conflicting Chrome repo/keyring files before apt runs
@@ -166,7 +166,7 @@
         gsettings set org.gnome.desktop.remote-desktop.rdp view-only false
         gsettings set org.gnome.desktop.remote-desktop.rdp port {{ rdp_port }}
       environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
       ignore_errors: yes
       register: gnome_rdp_gsettings
 
@@ -189,7 +189,7 @@
         openssl req -new -x509 -days 3650 -nodes
         -out {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt
         -keyout {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key
-        -subj "/CN={{ ansible_hostname }}"
+        -subj "/CN={{ ansible_facts['hostname'] }}"
       args:
         creates: "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
       become: no
@@ -211,7 +211,7 @@
         gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
         gsettings set org.gnome.desktop.remote-desktop.rdp tls-key "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
       environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
       ignore_errors: yes
 
     - name: Enable gnome-remote-desktop to autostart on login
