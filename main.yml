@@ -98,7 +98,7 @@
 
         - name: Download SF Mono Powerline fonts
           get_url:
-            url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
+            url: "https://github.com/epk/SF-Mono-Nerd-Font-{{ item }}.otf"
             dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
             owner: "{{ target_user }}"
           loop: ["Regular", "Bold"]
