@@ -18,17 +18,17 @@ log() {
     echo -e "${code}TARS: $*$nc"
 }
 
-[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. I can't adjust the life support without authorization." && exit 1
+[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. I can't recalibrate the ship without root." && exit 1
 
 # 1. Environment Detection
 HAS_GUI=false
 if command -v Xorg >/dev/null || [ -d /usr/share/xsessions ]; then
     HAS_GUI=true
-    log "yellow" "GUI detected. Setting up RDP for remote visual access."
+    log "yellow" "GUI detected. Setting up RDP."
 fi
 
 # 2. Package Installation
-log "yellow" "Provisioning tools and Proxmox QEMU Agent..."
+log "yellow" "Installing tools, Proxmox Agent, and Starship..."
 apt update && apt install -y \
     curl git openssh-server bash-completion fzf ufw qemu-guest-agent \
     $( [ "$HAS_GUI" = true ] && echo "xrdp" )
@@ -44,7 +44,7 @@ ufw allow ssh
 ufw --force enable
 
 # 4. SSH & Keys
-log "yellow" "Syncing GitHub keys for ${GH_USER}..."
+log "yellow" "Importing GitHub keys for ${GH_USER}..."
 install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$TARGET_HOME/.ssh"
 curl -s "https://github.com/${GH_USER}.keys" >> "$TARGET_HOME/.ssh/authorized_keys"
 chmod 600 "$TARGET_HOME/.ssh/authorized_keys"
@@ -57,31 +57,24 @@ PermitRootLogin prohibit-password
 EOF
 systemctl restart ssh
 
-# 5. Starship & Custom Minimalist Themes
+# 5. Starship & Custom Themes (Fixed TOML Parsing)
 if ! command -v starship &>/dev/null; then
     log "yellow" "Installing Starship..."
     curl -sS https://starship.rs/install.sh | sh -s -- -y
 fi
 
-log "yellow" "Configuring lean theme profiles (No blocks, no bulk)..."
+log "yellow" "Generating valid TOML themes... escaping the escape characters."
 THEME_DIR="$TARGET_HOME/.config/starship_themes"
 mkdir -p "$THEME_DIR"
 
 # --- AUTHENTIC ONE DARK (LEAN) ---
-cat <<EOF > "$THEME_DIR/onedark.toml"
-format = "\$directory\$git_branch\$git_status\$character"
+cat <<'EOF' > "$THEME_DIR/onedark.toml"
+format = "$directory$git_branch$git_status$character"
 add_newline = false
+
 [directory]
 style = "bold #61afef"
-[character]
-success_symbol = "[❯](bold #98c379)"
-error_symbol = "[❯](bold #e06c75)"
-[git_branch]
-symbol = " "
-style = "bold #c678dd"
-[git_status]
-style = "bold #e06c75"
-EOFtruncation_length = 3
+format = "[$path]($style) "
 
 [character]
 success_symbol = "[❯](bold #98c379)"
@@ -90,22 +83,41 @@ error_symbol = "[❯](bold #e06c75)"
 [git_branch]
 symbol = " "
 style = "bold #c678dd"
-format = "on [\$symbol\$branch](\$style) "
+format = "on [$symbol$branch]($style) "
 
 [git_status]
 style = "bold #e06c75"
-format = "([\[\$all_status\$ahead_behind\]](\$style) )"
+format = "([[$all_status$ahead_behind]]($style) )"
 EOF
 
-# Backup Frappe preset
-starship preset catppuccin-powerline -o "$THEME_DIR/catppuccin.toml"
+# --- CATPPUCCIN FRAPPÉ (LEAN) ---
+cat <<'EOF' > "$THEME_DIR/frappe.toml"
+format = "$directory$git_branch$git_status$character"
+add_newline = false
 
-# Link One Dark as default
+[directory]
+style = "bold #8caaee"
+format = "[$path]($style) "
+
+[character]
+success_symbol = "[❯](bold #a6d189)"
+error_symbol = "[❯](bold #e78284)"
+
+[git_branch]
+symbol = " "
+style = "bold #ca9ee6"
+format = "on [$symbol$branch]($style) "
+
+[git_status]
+style = "bold #e78284"
+format = "([[$all_status$ahead_behind]]($style) )"
+EOF
+
 ln -sf "$THEME_DIR/onedark.toml" "$TARGET_HOME/.config/starship.toml"
 chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
 
 # 6. Deploy .bashrc
-log "yellow" "Applying final cockpit settings to .bashrc..."
+log "yellow" "Finalizing .bashrc..."
 [ -f "$TARGET_HOME/.bashrc" ] && cp "$TARGET_HOME/.bashrc" "$TARGET_HOME/.bashrc.bak"
 
 cat <<'EOF' > "$TARGET_HOME/.bashrc"
@@ -115,14 +127,11 @@ HISTCONTROL=ignoreboth
 shopt -s histappend
 HISTSIZE=10000
 
-# Starship Initialization
 eval "$(starship init bash)"
 
-# Theme Swapping
-alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: Authentic One Dark active."'
-alias theme-frappe='ln -sf ~/.config/starship_themes/catppuccin.toml ~/.config/starship.toml && echo "TARS: Catppuccin active."'
+alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark active."'
+alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Frappe active."'
 
-# FZF & Smart History
 [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
 bind '"\e[A": history-search-backward'
 bind '"\e[B": history-search-forward'
@@ -133,4 +142,4 @@ EOF
 
 chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.bashrc"
 
-log "green" "Tokyo Night has been jettisoned. One Dark is now primary."
+log "green" "System ready. The TOML parsing error has been jettisoned."
