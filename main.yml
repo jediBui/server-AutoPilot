@@ -103,32 +103,26 @@
         state: present
         update_cache: no
 
-    - name: Install Google Chrome (download, fix repo conflict, install)
-      shell: |
-        set -e
+    - name: Write Google Chrome install script
+      copy:
+        dest: /tmp/install-chrome.sh
+        mode: "0755"
+        content: |
+          #!/bin/bash
+          set -e
+          curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
+          chmod 644 /usr/share/keyrings/google-chrome.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
+          apt-get update -qq
+          apt-get install -y --download-only google-chrome-stable
+          rm -f /etc/apt/sources.list.d/google-chrome-stable.list /usr/share/keyrings/google-chrome.asc
+          apt-get install -y google-chrome-stable
+          rm -f /etc/apt/sources.list.d/google-chrome-stable.list /usr/share/keyrings/google-chrome.asc
 
-        # 1. Download signing key as .gpg (binary dearmored)
-        curl -fsSL https://dl.google.com/linux/linux_signing_key.pub |           gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-        chmod 644 /usr/share/keyrings/google-chrome.gpg
-
-        # 2. Write our clean repo entry pointing at .gpg
-        echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"           > /etc/apt/sources.list.d/google-chrome.list
-        apt-get update -qq
-
-        # 3. Download the .deb but don't install yet
-        apt-get install -y --download-only google-chrome-stable
-
-        # 4. Remove the conflicting files the .deb drops on unpack
-        rm -f /etc/apt/sources.list.d/google-chrome-stable.list               /usr/share/keyrings/google-chrome.asc
-
-        # 5. Now actually install from the cached .deb
-        apt-get install -y google-chrome-stable
-
-        # 6. Clean up again in case the postinst re-dropped them
-        rm -f /etc/apt/sources.list.d/google-chrome-stable.list               /usr/share/keyrings/google-chrome.asc
+    - name: Install Google Chrome
+      command: /tmp/install-chrome.sh
       args:
         creates: /usr/bin/google-chrome-stable
-      changed_when: true
 
     # ── UFW Firewall ──────────────────────────────────────────────────────────
     - name: Configure and enable UFW
