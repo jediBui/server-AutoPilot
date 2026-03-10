@@ -18,13 +18,13 @@ log() {
     echo -e "${code}TARS: $*$nc"
 }
 
-[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. I need keys to the cockpit." && exit 1
+[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. Access denied." && exit 1
 
 # 1. Environment Detection
 HAS_GUI=false
 if command -v Xorg >/dev/null || [ -d /usr/share/xsessions ]; then
     HAS_GUI=true
-    log "yellow" "GUI detected. Setting up RDP for remote visual access."
+    log "yellow" "GUI detected. Prepping RDP."
 fi
 
 # 2. Package Installation
@@ -57,64 +57,104 @@ PermitRootLogin prohibit-password
 EOF
 systemctl restart ssh
 
-# 5. Starship & Theme Profiles (Verified Formatting)
+# 5. Starship & Theme Profiles (The "Lean/Pure" Standard)
 if ! command -v starship &>/dev/null; then
-    log "yellow" "Installing Starship..."
+    log "yellow" "Installing Starship HUD..."
     curl -sS https://starship.rs/install.sh | sh -s -- -y
 fi
 
-log "yellow" "Generating theme files... clearing the bracket warnings."
+log "yellow" "Building Lean prompt profiles for all themes..."
 THEME_DIR="$TARGET_HOME/.config/starship_themes"
 mkdir -p "$THEME_DIR"
 
-# --- ONE DARK (LEAN) ---
+# --- THEME 1: ONE DARK (Lean) ---
 cat <<'EOF' > "$THEME_DIR/onedark.toml"
 format = "$directory$git_branch$git_status$character"
 add_newline = false
-
 [directory]
 style = "bold #61afef"
 format = "[$path]($style) "
-
 [character]
 success_symbol = "[❯](bold #98c379)"
 error_symbol = "[❯](bold #e06c75)"
-
 [git_branch]
 symbol = " "
 style = "bold #c678dd"
 format = "on [$symbol$branch]($style) "
-
 [git_status]
 style = "bold #e06c75"
 format = "([$all_status$ahead_behind]($style) )"
 EOF
 
-# --- FRAPPE (LEAN) ---
+# --- THEME 2: CATPPUCCIN FRAPPÉ (Lean) ---
 cat <<'EOF' > "$THEME_DIR/frappe.toml"
 format = "$directory$git_branch$git_status$character"
 add_newline = false
-
 [directory]
 style = "bold #8caaee"
 format = "[$path]($style) "
-
 [character]
 success_symbol = "[❯](bold #a6d189)"
 error_symbol = "[❯](bold #e78284)"
-
 [git_branch]
 symbol = " "
 style = "bold #ca9ee6"
 format = "on [$symbol$branch]($style) "
-
 [git_status]
 style = "bold #e78284"
 format = "([$all_status$ahead_behind]($style) )"
 EOF
 
+# --- THEME 3: CATPPUCCIN MOCHA (Lean) ---
+cat <<'EOF' > "$THEME_DIR/mocha.toml"
+format = "$directory$git_branch$git_status$character"
+add_newline = false
+[directory]
+style = "bold #89b4fa"
+format = "[$path]($style) "
+[character]
+success_symbol = "[❯](bold #a6e3a1)"
+error_symbol = "[❯](bold #f38ba8)"
+[git_branch]
+symbol = " "
+style = "bold #cba6f7"
+format = "on [$symbol$branch]($style) "
+[git_status]
+style = "bold #f38ba8"
+format = "([$all_status$ahead_behind]($style) )"
+EOF
+
+# Set One Dark as the initial default
 ln -sf "$THEME_DIR/onedark.toml" "$TARGET_HOME/.config/starship.toml"
 chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.config"
 
 # 6. Deploy .bashrc
-log "yellow"
+log "yellow" "Finalizing .bashrc with the Lean theme switcher..."
+[ -f "$TARGET_HOME/.bashrc" ] && cp "$TARGET_HOME/.bashrc" "$TARGET_HOME/.bashrc.bak"
+
+cat <<'EOF' > "$TARGET_HOME/.bashrc"
+# TARS SYSTEM CONFIG
+[ -z "$PS1" ] && return
+HISTCONTROL=ignoreboth
+shopt -s histappend
+HISTSIZE=10000
+
+eval "$(starship init bash)"
+
+# Theme Swapping Aliases
+alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark (Lean) active."'
+alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Catppuccin Frappe (Lean) active."'
+alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Catppuccin Mocha (Lean) active."'
+
+# FZF & Smart History
+[ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
+bind '"\e[A": history-search-backward'
+bind '"\e[B": history-search-forward'
+
+alias ll='ls -alF --color=auto'
+alias ..='cd ..'
+EOF
+
+chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.bashrc"
+
+log "green" "All themes updated to the Minimalist Lean style. Mission successful."
