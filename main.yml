@@ -93,15 +93,20 @@
         state: present
         update_cache: no
 
-    - name: Download Google Chrome signing key (apt-key-free method)
-      get_url:
-        url: https://dl.google.com/linux/linux_signing_key.pub
-        dest: /tmp/google-chrome.pub
-        mode: "0644"
+    - name: Remove any conflicting Chrome keyring or repo files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /usr/share/keyrings/google-chrome.gpg
+        - /usr/share/keyrings/google-chrome.asc
+        - /etc/apt/sources.list.d/google-chrome.list
+        - /etc/apt/sources.list.d/google-chrome-stable.list
 
-    - name: Dearmor and install Google Chrome signing key
+    - name: Download and install Google Chrome signing key
       shell: |
-        gpg --dearmor < /tmp/google-chrome.pub > /usr/share/keyrings/google-chrome.gpg
+        curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
+          gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
         chmod 644 /usr/share/keyrings/google-chrome.gpg
       args:
         creates: /usr/share/keyrings/google-chrome.gpg
@@ -111,13 +116,20 @@
         dest: /etc/apt/sources.list.d/google-chrome.list
         content: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main\n"
         mode: "0644"
-      notify: Update apt cache
 
     - name: Install Google Chrome
       apt:
         name: google-chrome-stable
         state: present
         update_cache: yes
+
+    - name: Remove Chrome auto-generated conflicting repo files (post-install cleanup)
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/google-chrome-stable.list
+        - /usr/share/keyrings/google-chrome.asc
 
     # ── UFW Firewall ──────────────────────────────────────────────────────────
     - name: Configure and enable UFW
