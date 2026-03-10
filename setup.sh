@@ -5,7 +5,7 @@ readonly GH_USER="jediBui"
 readonly TARGET_USER="${SUDO_USER:-$USER}"
 readonly TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 
-# TARS-style logging
+# TARS-style logging: 100% helpful, 70% humor.
 log() {
     local color="$1"; shift
     local red='\033[0;31m' green='\033[0;32m' yellow='\033[1;33m' nc='\033[0m'
@@ -24,33 +24,37 @@ log() {
 HAS_GNOME=false
 [[ $(command -v gnome-shell) ]] && HAS_GNOME=true
 
-# 2. Package Installation
-log "yellow" "Installing tools, Proxmox Agent, and RDP..."
+# 2. Package Installation & Google Chrome Setup
+log "yellow" "Provisioning tools, Proxmox Agent, and Google Chrome..."
+
+# Add Google Chrome Repository
+if ! command -v google-chrome-stable &>/dev/null; then
+    log "yellow" "Adding Google Chrome repository... Preparing for web navigation."
+    curl -fSsL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor | tee /usr/share/keyrings/google-chrome.gpg > /dev/null
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list
+fi
+
 apt update && apt install -y \
     curl git openssh-server bash-completion fzf ufw qemu-guest-agent \
-    gnome-remote-desktop fontconfig
+    gnome-remote-desktop fontconfig google-chrome-stable
 
 # 3. Install SF Mono Powerline (Twixes Repository)
 log "yellow" "Downloading SF Mono Powerline... It’s an older code, but it checks out."
 FONT_DIR="$TARGET_HOME/.local/share/fonts"
 sudo -u "$TARGET_USER" mkdir -p "$FONT_DIR"
 
-# Download SF Mono Powerline Regular and Bold
 BASE_URL="https://github.com/Twixes/SF-Mono-Powerline/raw/master"
 for style in "Regular" "Bold"; do
     if [[ ! -f "$FONT_DIR/SF-Mono-Powerline-$style.otf" ]]; then
         curl -L "$BASE_URL/SF-Mono-Powerline-$style.otf" -o "$FONT_DIR/SF-Mono-Powerline-$style.otf"
     fi
 done
-
 sudo -u "$TARGET_USER" fc-cache -f "$FONT_DIR"
 
 # 4. Inject Font into Gnome Terminal
 if [ "$HAS_GNOME" = true ]; then
     log "yellow" "Adjusting Gnome Terminal vision sensors..."
     PROFILE=$(sudo -u "$TARGET_USER" gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
-    
-    # Apply SF Mono Powerline at size 12
     sudo -u "$TARGET_USER" gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$PROFILE/" use-system-font false
     sudo -u "$TARGET_USER" gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$PROFILE/" font "'SF Mono Powerline 12'"
 fi
@@ -65,7 +69,6 @@ if [ "$HAS_GNOME" = true ]; then
     log "yellow" "Enabling native Gnome Remote Desktop sharing..."
     sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" \
     gsettings set org.gnome.desktop.remote-desktop.rdp screen-share-mode 'mirror-screen'
-    
     sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" \
     gsettings set org.gnome.desktop.remote-desktop.rdp enable true
 fi
@@ -146,4 +149,4 @@ EOF
 
 chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.bashrc"
 
-log "green" "System fully configured. SF Mono Powerline is now the primary font."
+log "green" "System fully configured. Google Chrome is installed and SF Mono is set. Ready for departure."
