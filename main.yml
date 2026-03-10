@@ -20,9 +20,20 @@
       changed_when: false
 
     - name: TARS | Detect GNOME Terminal Profile
-      set_fact:
-        terminal_profile: "{{ lookup('pipe', 'gsettings get org.gnome.Terminal.ProfilesList default') | replace(\"'\", \"\") }}"
+      become_user: "{{ target_user }}"
+      command: gsettings get org.gnome.Terminal.ProfilesList default
+      register: gnome_profile_raw
+      ignore_errors: true
+      changed_when: false
       when: gnome_check.rc == 0
+
+    - name: TARS | Set GNOME Terminal Profile Fact
+      set_fact:
+        terminal_profile: "{{ gnome_profile_raw.stdout | replace(\"'\", \"\") }}"
+      when:
+        - gnome_check.rc == 0
+        - gnome_profile_raw is not skipped
+        - gnome_profile_raw.rc == 0
 
     # FIX: Replaced deprecated apt_key / apt_repository with get_url + deb822_repository
     - name: TARS | Adding Repositories and Keys
