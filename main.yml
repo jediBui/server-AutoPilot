@@ -208,10 +208,8 @@
     - name: Point gnome-remote-desktop at the TLS cert
       become: no
       shell: |
-        gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert \
-          "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
-        gsettings set org.gnome.desktop.remote-desktop.rdp tls-key \
-          "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
+        gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+        gsettings set org.gnome.desktop.remote-desktop.rdp tls-key "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
       environment:
         DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
       ignore_errors: yes
@@ -249,8 +247,8 @@
 
     - name: Copy Regular font files only
       shell: |
-        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f \( -name "*.ttf" -o -name "*.otf" \) \
-          -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
+        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f -name "*.ttf" -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
+        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f -name "*.otf" -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
       args:
         creates: /usr/local/share/fonts/SFMonoNerd/.installed
 
