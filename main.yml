@@ -19,19 +19,28 @@
       ignore_errors: true
       changed_when: false
 
+    - name: TARS | Check GNOME Terminal schema exists
+      command: gsettings list-schemas
+      register: gnome_schemas
+      ignore_errors: true
+      changed_when: false
+      when: gnome_check.rc == 0
+
     - name: TARS | Detect GNOME Terminal Profile
       become_user: "{{ target_user }}"
       command: gsettings get org.gnome.Terminal.ProfilesList default
       register: gnome_profile_raw
       ignore_errors: true
       changed_when: false
-      when: gnome_check.rc == 0
+      when:
+        - gnome_check.rc == 0
+        - gnome_schemas.rc == 0
+        - "'org.gnome.Terminal.ProfilesList' in gnome_schemas.stdout"
 
     - name: TARS | Set GNOME Terminal Profile Fact
       set_fact:
         terminal_profile: "{{ gnome_profile_raw.stdout | replace(\"'\", \"\") }}"
       when:
-        - gnome_check.rc == 0
         - gnome_profile_raw is not skipped
         - gnome_profile_raw.rc == 0
 
