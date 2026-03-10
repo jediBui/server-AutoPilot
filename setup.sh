@@ -1,152 +1,352 @@
-#!/usr/bin/env bash
+---
+- name: Provision Ubuntu VM
+  hosts: localhost
+  connection: local
+  become: true
+  vars:
+    github_username: jediBui
+    rdp_port: 3389
+    starship_theme: catppuccin-frappe
+    font_size: 13
+    ansible_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
+    user_home: "{{ '/home/' + ansible_user if ansible_user != 'root' else '/root' }}"
 
-# --- CONFIGURATION ---
-readonly GH_USER="jediBui"
-readonly TARGET_USER="${SUDO_USER:-$USER}"
-readonly TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+  pre_tasks:
+    - name: Verify running as root
+      assert:
+        that: ansible_user_id == "root"
+        fail_msg: "This playbook must be run as root (via sudo)"
 
-# TARS-style logging: 100% helpful, 70% humor.
-log() {
-    local color="$1"; shift
-    local red='\033[0;31m' green='\033[0;32m' yellow='\033[1;33m' nc='\033[0m'
-    case "$color" in
-        "red")    local code=$red ;;
-        "green")  local code=$green ;;
-        "yellow") local code=$yellow ;;
-        *)        local code=$nc ;;
-    esac
-    echo -e "${code}TARS: $*$nc"
-}
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
 
-[[ $EUID -ne 0 ]] && log "red" "Error: Run with sudo. I need keys to the cockpit." && exit 1
+  tasks:
+    # ── SSH Keys ──────────────────────────────────────────────────────────────
+    - name: Fetch SSH keys from GitHub
+      uri:
+        url: "https://github.com/{{ github_username }}.keys"
+        return_content: yes
+        status_code: 200
+      register: github_keys
+      retries: 3
+      delay: 5
 
-# 1. Environment Detection
-HAS_GNOME=false
-[[ $(command -v gnome-shell) ]] && HAS_GNOME=true
+    - name: Ensure .ssh directory exists for target user
+      file:
+        path: "{{ user_home }}/.ssh"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
 
-# 2. Package Installation & Google Chrome Setup
-log "yellow" "Provisioning tools, Proxmox Agent, and Google Chrome..."
+    - name: Write GitHub SSH keys to authorized_keys
+      copy:
+        content: "{{ github_keys.content }}"
+        dest: "{{ user_home }}/.ssh/authorized_keys"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
 
-# Add Google Chrome Repository
-if ! command -v google-chrome-stable &>/dev/null; then
-    log "yellow" "Adding Google Chrome repository... Preparing for web navigation."
-    curl -fSsL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor | tee /usr/share/keyrings/google-chrome.gpg > /dev/null
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" | tee /etc/apt/sources.list.d/google-chrome.list
-fi
+    - name: Disable SSH password authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication"
+        line: "PasswordAuthentication no"
+        state: present
+        backup: yes
+      notify: Restart SSH
 
-apt update && apt install -y \
-    curl git openssh-server bash-completion fzf ufw qemu-guest-agent \
-    gnome-remote-desktop fontconfig google-chrome-stable
+    - name: Disable SSH challenge-response authentication
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?ChallengeResponseAuthentication"
+        line: "ChallengeResponseAuthentication no"
+        state: present
+      notify: Restart SSH
 
-# 3. Install SF Mono Powerline (Twixes Repository)
-log "yellow" "Downloading SF Mono Powerline... It’s an older code, but it checks out."
-FONT_DIR="$TARGET_HOME/.local/share/fonts"
-sudo -u "$TARGET_USER" mkdir -p "$FONT_DIR"
+    - name: Ensure PubkeyAuthentication is enabled
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PubkeyAuthentication"
+        line: "PubkeyAuthentication yes"
+        state: present
+      notify: Restart SSH
 
-BASE_URL="https://github.com/Twixes/SF-Mono-Powerline/raw/master"
-for style in "Regular" "Bold"; do
-    if [[ ! -f "$FONT_DIR/SF-Mono-Powerline-$style.otf" ]]; then
-        curl -L "$BASE_URL/SF-Mono-Powerline-$style.otf" -o "$FONT_DIR/SF-Mono-Powerline-$style.otf"
-    fi
-done
-sudo -u "$TARGET_USER" fc-cache -f "$FONT_DIR"
+    # ── Core Applications ─────────────────────────────────────────────────────
+    - name: Install core packages
+      apt:
+        name:
+          - curl
+          - git
+          - openssh-server
+          - fzf
+          - ufw
+          - qemu-guest-agent
+          - wget
+          - unzip
+          - fontconfig
+          - dconf-cli
+          - gnome-tweaks
+          - openssl
+        state: present
+        update_cache: no
 
-# 4. Inject Font into Gnome Terminal
-if [ "$HAS_GNOME" = true ]; then
-    log "yellow" "Adjusting Gnome Terminal vision sensors..."
-    PROFILE=$(sudo -u "$TARGET_USER" gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
-    sudo -u "$TARGET_USER" gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$PROFILE/" use-system-font false
-    sudo -u "$TARGET_USER" gsettings set "org.gnome.Terminal.Legacy.Profile:/org/gnome/terminal/legacy/profiles:/:$PROFILE/" font "'SF Mono Powerline 12'"
-fi
+    - name: Install Google Chrome (add signing key)
+      apt_key:
+        url: https://dl.google.com/linux/linux_signing_key.pub
+        state: present
+        keyring: /usr/share/keyrings/google-chrome.gpg
 
-# 5. Remote Desktop & Firewall
-systemctl enable --now qemu-guest-agent
-ufw allow ssh
-ufw allow 3389/tcp
-ufw --force enable
+    - name: Add Google Chrome apt repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main"
+        filename: google-chrome
+        state: present
+        update_cache: yes
 
-if [ "$HAS_GNOME" = true ]; then
-    log "yellow" "Enabling native Gnome Remote Desktop sharing..."
-    sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" \
-    gsettings set org.gnome.desktop.remote-desktop.rdp screen-share-mode 'mirror-screen'
-    sudo -u "$TARGET_USER" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$TARGET_USER")/bus" \
-    gsettings set org.gnome.desktop.remote-desktop.rdp enable true
-fi
+    - name: Install Google Chrome
+      apt:
+        name: google-chrome-stable
+        state: present
 
-# 6. SSH & Keys
-log "yellow" "Securing the hatch and importing keys from ${GH_USER}..."
-install -d -m 700 -o "$TARGET_USER" -g "$TARGET_USER" "$TARGET_HOME/.ssh"
-curl -s "https://github.com/${GH_USER}.keys" >> "$TARGET_HOME/.ssh/authorized_keys"
-chmod 600 "$TARGET_HOME/.ssh/authorized_keys"
-chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.ssh"
+    # ── UFW Firewall ──────────────────────────────────────────────────────────
+    - name: Allow SSH through UFW
+      ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
 
-cat <<EOF > /etc/ssh/sshd_config.d/99-hardened.conf
-PasswordAuthentication no
-PubkeyAuthentication yes
-PermitRootLogin prohibit-password
-EOF
-systemctl restart ssh
+    - name: Allow RDP port through UFW
+      ufw:
+        rule: allow
+        port: "{{ rdp_port }}"
+        proto: tcp
 
-# 7. Starship Minimalist Themes
-log "yellow" "Generating Lean prompt themes..."
-THEME_DIR="$TARGET_HOME/.config/starship_themes"
-sudo -u "$TARGET_USER" mkdir -p "$THEME_DIR"
+    - name: Enable UFW (default deny incoming)
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
 
-for theme in "onedark" "frappe" "mocha"; do
-    case $theme in
-        "onedark") dir="#61afef"; char="#98c379"; git="#c678dd" ;;
-        "frappe")  dir="#8caaee"; char="#a6d189"; git="#ca9ee6" ;;
-        "mocha")   dir="#89b4fa"; char="#a6e3a1"; git="#cba6f7" ;;
-    esac
+    - name: UFW allow outgoing
+      ufw:
+        policy: allow
+        direction: outgoing
 
-cat <<EOF > "$THEME_DIR/${theme}.toml"
-format = "\$directory\$git_branch\$git_status\$character"
-add_newline = false
-[directory]
-style = "bold $dir"
-format = "[\$path](\$style) "
-[character]
-success_symbol = "[❯](bold $char)"
-error_symbol = "[❯](bold #e06c75)"
-[git_branch]
-symbol = " "
-style = "bold $git"
-format = "on [\$symbol\$branch](\$style) "
-[git_status]
-style = "bold #e06c75"
-format = "([\$all_status\$ahead_behind](\$style) )"
-EOF
-done
+    # ── QEMU Guest Agent ──────────────────────────────────────────────────────
+    - name: Enable and start qemu-guest-agent
+      systemd:
+        name: qemu-guest-agent
+        enabled: yes
+        state: started
 
-sudo -u "$TARGET_USER" ln -sf "$THEME_DIR/onedark.toml" "$TARGET_HOME/.config/starship.toml"
+    # ── RDP / Desktop Sharing (native GNOME RDP — Ubuntu 22.04+) ─────────────
+    # This is the built-in gnome-remote-desktop service visible in
+    # Settings → Sharing → Desktop Sharing. No third-party software needed.
 
-# 8. Bashrc & Aliases
-log "yellow" "Updating .bashrc cockpit settings..."
-[ -f "$TARGET_HOME/.bashrc" ] && cp "$TARGET_HOME/.bashrc" "$TARGET_HOME/.bashrc.bak"
+    - name: Install gnome-remote-desktop
+      apt:
+        name: gnome-remote-desktop
+        state: present
 
-cat <<'EOF' > "$TARGET_HOME/.bashrc"
-# TARS SYSTEM CONFIG
-[ -z "$PS1" ] && return
-HISTCONTROL=ignoreboth
-shopt -s histappend
-HISTSIZE=10000
+    - name: Ensure gnome-remote-desktop config directory exists
+      file:
+        path: "{{ user_home }}/.config/gnome-remote-desktop"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0700"
 
-eval "$(starship init bash)"
+    - name: Enable RDP in gnome-remote-desktop (Desktop Sharing on)
+      become: no
+      shell: |
+        gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+        gsettings set org.gnome.desktop.remote-desktop.rdp view-only false
+        gsettings set org.gnome.desktop.remote-desktop.rdp port {{ rdp_port }}
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+      ignore_errors: yes
+      register: gnome_rdp_gsettings
 
-# Theme Swapping
-alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark (Lean) active."'
-alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Catppuccin Frappe (Lean) active."'
-alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Catppuccin Mocha (Lean) active."'
+    - name: Write gnome-remote-desktop keyfile fallback (headless safe)
+      # Applied when gsettings can't reach a live session bus.
+      # gnome-remote-desktop reads this on next graphical login.
+      copy:
+        dest: "{{ user_home }}/.config/gnome-remote-desktop/rdp.conf"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+        content: |
+          [rdp]
+          enable=true
+          view-only=false
+          port={{ rdp_port }}
 
-# FZF & History
-[ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
-bind '"\e[A": history-search-backward'
-bind '"\e[B": history-search-forward'
+    - name: Generate self-signed TLS cert for RDP (required by gnome-remote-desktop)
+      command: >
+        openssl req -new -x509 -days 3650 -nodes
+        -out {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt
+        -keyout {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key
+        -subj "/CN={{ ansible_hostname }}"
+      args:
+        creates: "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+      become: no
 
-alias ll='ls -alF --color=auto'
-alias ..='cd ..'
-EOF
+    - name: Set correct ownership on RDP TLS cert
+      file:
+        path: "{{ item }}"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0600"
+      loop:
+        - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+        - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
+      ignore_errors: yes
 
-chown "$TARGET_USER:$TARGET_USER" "$TARGET_HOME/.bashrc"
+    - name: Point gnome-remote-desktop at the TLS cert
+      become: no
+      shell: |
+        gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert \
+          "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
+        gsettings set org.gnome.desktop.remote-desktop.rdp tls-key \
+          "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+      ignore_errors: yes
 
-log "green" "System fully configured. Google Chrome is installed and SF Mono is set. Ready for departure."
+    - name: Enable and start gnome-remote-desktop user service (best-effort)
+      become: no
+      shell: |
+        systemctl --user enable gnome-remote-desktop.service
+        systemctl --user start  gnome-remote-desktop.service
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+        XDG_RUNTIME_DIR: "/run/user/{{ ansible_user_uid }}"
+      ignore_errors: yes
+
+    - name: Note — RDP will be fully active after first graphical login
+      debug:
+        msg: >
+          gnome-remote-desktop is installed and configured for port {{ rdp_port }}.
+          The service starts automatically on graphical login (it is a user-session service,
+          not a system service). Desktop Sharing and Remote Control will appear enabled
+          in Settings → Sharing after the first login.
+
+    # ── SF Mono Nerd Font ─────────────────────────────────────────────────────
+    - name: Create fonts directory
+      file:
+        path: /usr/local/share/fonts/SFMonoNerd
+        state: directory
+        mode: "0755"
+
+    - name: Clone SF-Mono-Nerd-Font repository
+      git:
+        repo: https://github.com/epk/SF-Mono-Nerd-Font.git
+        dest: /tmp/SF-Mono-Nerd-Font
+        depth: 1
+
+    - name: Copy Regular font files only
+      shell: |
+        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f \( -name "*.ttf" -o -name "*.otf" \) \
+          -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
+      args:
+        creates: /usr/local/share/fonts/SFMonoNerd/.installed
+
+    - name: Mark fonts as installed
+      file:
+        path: /usr/local/share/fonts/SFMonoNerd/.installed
+        state: touch
+
+    - name: Rebuild font cache
+      command: fc-cache -fv
+      changed_when: false
+
+    # ── Starship Prompt ───────────────────────────────────────────────────────
+    - name: Check if Starship is already installed
+      stat:
+        path: /usr/local/bin/starship
+      register: starship_binary
+
+    - name: Download and install Starship
+      shell: |
+        curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
+      when: not starship_binary.stat.exists
+      args:
+        creates: /usr/local/bin/starship
+
+    - name: Ensure starship config directory exists
+      file:
+        path: "{{ user_home }}/.config"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+
+    - name: Download Catppuccin Frappe starship theme
+      get_url:
+        url: "https://raw.githubusercontent.com/catppuccin/starship/main/themes/frappe.toml"
+        dest: "{{ user_home }}/.config/starship.toml"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0644"
+        force: no
+
+    - name: Initialise Starship in .bashrc
+      blockinfile:
+        path: "{{ user_home }}/.bashrc"
+        marker: "# {mark} STARSHIP PROMPT"
+        block: |
+          # Starship prompt
+          export STARSHIP_CONFIG="$HOME/.config/starship.toml"
+          eval "$(starship init bash)"
+        create: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    - name: Initialise Starship in .bash_profile (login shells)
+      blockinfile:
+        path: "{{ user_home }}/.bash_profile"
+        marker: "# {mark} STARSHIP PROMPT"
+        block: |
+          [[ -f ~/.bashrc ]] && source ~/.bashrc
+        create: yes
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+
+    # ── GNOME Terminal font configuration (best-effort, needs active session) ─
+    - name: Check if GNOME Terminal is available
+      command: which gnome-terminal
+      register: gnome_terminal_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Configure GNOME Terminal font via dconf (requires user session)
+      become: no
+      shell: |
+        PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
+        dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular {{ font_size }}'"
+        dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
+      environment:
+        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_user_uid }}/bus"
+      when: gnome_terminal_check.rc == 0
+      ignore_errors: yes
+      register: gnome_font_result
+
+    - name: Note about font config
+      debug:
+        msg: >
+          GNOME Terminal font could not be set automatically (requires an active graphical session).
+          Run manually after login:
+            PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
+            dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular 13'"
+            dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
+      when: gnome_font_result is defined and gnome_font_result.rc is defined and gnome_font_result.rc != 0
+
+  # ── Handlers ────────────────────────────────────────────────────────────────
+  handlers:
+    - name: Restart SSH
+      systemd:
+        name: sshd
+        state: restarted
