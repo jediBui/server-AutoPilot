@@ -52,15 +52,16 @@ if ! command -v starship &>/dev/null; then
     curl -sS https://starship.rs/install.sh | sh -s -- -y
 fi
 
-# 5. Theme Management (One Dark & Catppuccin Frappé)
-log "yellow" "Setting up theme archives..."
+# 5. Theme Management (Corrected Preset Names)
+log "yellow" "Correcting theme presets... adjusting navigation coordinates."
 THEME_DIR="$TARGET_HOME/.config/starship_themes"
 mkdir -p "$THEME_DIR"
 
-# Generate One Dark (Active by default)
-starship preset toxic-drummer -o "$THEME_DIR/onedark.toml"
-# Generate Catppuccin Frappé (The backup)
-starship preset pastel-power -o "$THEME_DIR/catppuccin.toml"
+# Generate Tokyo Night (Our One Dark stand-in)
+starship preset tokyo-night -o "$THEME_DIR/onedark.toml"
+
+# Generate Catppuccin (The Frappé backup)
+starship preset catppuccin-powerline -o "$THEME_DIR/catppuccin.toml"
 
 # Set default link
 ln -sf "$THEME_DIR/onedark.toml" "$TARGET_HOME/.config/starship.toml"
