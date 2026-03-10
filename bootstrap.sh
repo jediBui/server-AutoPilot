@@ -7,6 +7,8 @@ GITHUB_USER="jediBui"
 GITHUB_REPO="server-AutoPilot"
 PLAYBOOK_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/main.yml"
 PLAYBOOK="/tmp/main.yml"
+ANSIBLE_CFG="/tmp/ansible.cfg"
+ANSIBLE_CFG_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/ansible.cfg"
 
 # ── Must run as root ──────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
@@ -23,7 +25,7 @@ if ! command -v ansible-playbook &>/dev/null; then
   apt-get update -qq
   apt-get install -y -qq software-properties-common
   add-apt-repository --yes --update ppa:ansible/ansible
-  apt-get install -y -qq ansible curl
+  apt-get install -y -qq ansible
 fi
 
 # ── Clear any leftover Chrome repo conflicts ──────────────────────────────────
@@ -34,9 +36,10 @@ rm -f /etc/apt/sources.list.d/google-chrome*.list \
 # ── Download and run the playbook ─────────────────────────────────────────────
 echo "Downloading playbook..."
 curl -fsSL "$PLAYBOOK_URL" -o "$PLAYBOOK"
+curl -fsSL "$ANSIBLE_CFG_URL" -o "$ANSIBLE_CFG"
 
 echo "Running playbook..."
-ANSIBLE_FORCE_COLOR=1 ansible-playbook \
+ANSIBLE_CONFIG="$ANSIBLE_CFG" ANSIBLE_FORCE_COLOR=1 ansible-playbook \
   --connection=local \
   --inventory "localhost," \
   -e "target_user=${REAL_USER}" \
