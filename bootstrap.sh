@@ -1,14 +1,13 @@
-#!/usr/bin/env bash
-set -e
+#!/bin/bash
+# TARS: Keeping it simple. Almost too simple.
 
-# TARS: Setting honesty to 95% and efficiency to 100%.
-echo "Initializing Ansible propulsion..."
+# 1. Get the tools
+sudo apt update
+sudo apt install -y software-properties-common ansible git
 
-# 1. Install Ansible (minimal dependencies)
-apt update && apt install -y ansible
-
-# 2. Execute the Playbook
-# --become-pass allows the playbook to use your sudo privileges
-ansible-playbook main.yml --ask-become-pass
-
-echo "Mission complete. You can take it from here."
+# 2. Run the plan
+if [ -f "main.yml" ]; then
+    ansible-playbook main.yml
+else
+    echo "TARS: I can't find main.yml. Did you leave it in the fourth dimension?"
+fi
