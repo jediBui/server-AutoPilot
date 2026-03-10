@@ -105,28 +105,48 @@
           PermitRootLogin prohibit-password
       notify: Restart SSH
 
-    - name: Generating Starship Themes
-      template:
+- name: TARS | Generating Starship Themes
+      become_user: "{{ target_user }}"
+      file:
+        path: "{{ target_home }}/.config/starship_themes"
+        state: directory
+        owner: "{{ target_user }}"
+        mode: '0755'
+
+    - name: TARS | Writing Starship Theme Files
+      become_user: "{{ target_user }}"
+      copy:
         dest: "{{ target_home }}/.config/starship_themes/{{ item.name }}.toml"
-        content:
+        content: |
           format = "$directory$git_branch$git_status$character"
           add_newline = false
+
           [directory]
           style = "bold {{ item.dir }}"
           format = "[$path]($style) "
+
           [character]
           success_symbol = "[❯](bold {{ item.char }})"
           error_symbol = "[❯](bold #e06c75)"
+
           [git_branch]
           symbol = " "
           style = "bold {{ item.git }}"
           format = "on [$symbol$branch]($style) "
+
           [git_status]
           style = "bold #e06c75"
           format = "([$all_status$ahead_behind]($style) )"
       loop: "{{ themes }}"
-      become_user: "{{ target_user }}"
 
+    - name: TARS | Setting default OneDark theme
+      become_user: "{{ target_user }}"
+      file:
+        src: "{{ target_home }}/.config/starship_themes/onedark.toml"
+        dest: "{{ target_home }}/.config/starship.toml"
+        state: link
+        force: yes
+        
     - name: Writing .bashrc
       copy:
         dest: "{{ target_home }}/.bashrc"
