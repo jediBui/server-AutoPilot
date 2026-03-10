@@ -11,11 +11,6 @@
     target_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
     user_home: "{{ '/home/' + target_user if target_user != 'root' else '/root' }}"
 
-  vars_prompt:
-    - name: rdp_password
-      prompt: "RDP password (used to connect via Remote Desktop)"
-      private: yes
-      confirm: yes
 
   pre_tasks:
     - name: Verify running as root
@@ -148,100 +143,48 @@
         enabled: yes
         state: started
 
-    # ── RDP / Desktop Sharing (native GNOME RDP — Ubuntu 22.04+) ─────────────
-    # This is the built-in gnome-remote-desktop service visible in
-    # Settings → Sharing → Desktop Sharing. No third-party software needed.
+    # ── RDP via XRDP ─────────────────────────────────────────────────────────
+    # xrdp is a system service — works headlessly, no active session needed.
+    # Connect with: host:3389, your normal Ubuntu username and password.
 
-    - name: Install gnome-remote-desktop
+    - name: Install xrdp
       apt:
-        name: gnome-remote-desktop
+        name:
+          - xrdp
+          - xorgxrdp
         state: present
 
-    - name: Ensure gnome-remote-desktop config directory exists
-      file:
-        path: "{{ user_home }}/.config/gnome-remote-desktop"
-        state: directory
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0700"
+    - name: Set xrdp to listen on port {{ rdp_port }}
+      lineinfile:
+        path: /etc/xrdp/xrdp.ini
+        regexp: "^port="
+        line: "port={{ rdp_port }}"
+        backup: yes
+      notify: Restart xrdp
 
-    - name: Write gnome-remote-desktop config (enable RDP, set port)
+    - name: Add xrdp user to ssl-cert group (fixes TLS errors)
+      user:
+        name: xrdp
+        groups: ssl-cert
+        append: yes
+
+    - name: Use the existing desktop session instead of a new Xorg session
       copy:
-        dest: "{{ user_home }}/.config/gnome-remote-desktop/rdp.conf"
+        dest: "{{ user_home }}/.xsession"
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
-        mode: "0600"
-        content: |
-          [rdp]
-          enable=true
-          view-only=false
-          port={{ rdp_port }}
-
-    - name: Set RDP credentials via grdctl
-      become: no
-      shell: |
-        grdctl rdp enable
-        grdctl rdp set-credentials "{{ target_user }}" "{{ rdp_password }}"
-        grdctl rdp disable-view-only
-      environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
-        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['user_uid'] }}"
-      ignore_errors: yes
-
-    - name: Generate self-signed TLS cert for RDP (required by gnome-remote-desktop)
-      command: >
-        openssl req -new -x509 -days 3650 -nodes
-        -out {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt
-        -keyout {{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key
-        -subj "/CN={{ ansible_facts['hostname'] }}"
-      args:
-        creates: "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
-      become: no
-
-    - name: Set correct ownership on RDP TLS cert
-      file:
-        path: "{{ item }}"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0600"
-      loop:
-        - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
-        - "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
-      ignore_errors: yes
-
-    - name: Point gnome-remote-desktop at the TLS cert via grdctl
-      become: no
-      shell: |
-        grdctl rdp set-tls-cert "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.crt"
-        grdctl rdp set-tls-key "{{ user_home }}/.config/gnome-remote-desktop/rdp-tls.key"
-      environment:
-        DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/{{ ansible_facts['user_uid'] }}/bus"
-        XDG_RUNTIME_DIR: "/run/user/{{ ansible_facts['user_uid'] }}"
-      ignore_errors: yes
-
-    - name: Enable gnome-remote-desktop to autostart on login
-      become: no
-      file:
-        path: "{{ user_home }}/.config/systemd/user/default.target.wants"
-        state: directory
         mode: "0755"
+        content: |
+          export GNOME_SHELL_SESSION_MODE=ubuntu
+          export XDG_SESSION_TYPE=x11
+          export XDG_CURRENT_DESKTOP=ubuntu:GNOME
+          exec /usr/bin/gnome-session
 
-    - name: Symlink gnome-remote-desktop service for autostart
-      become: no
-      file:
-        src: /usr/lib/systemd/user/gnome-remote-desktop.service
-        dest: "{{ user_home }}/.config/systemd/user/default.target.wants/gnome-remote-desktop.service"
-        state: link
-        force: yes
-      ignore_errors: yes
-
-    - name: Note — RDP will be fully active after first graphical login
-      debug:
-        msg: >
-          gnome-remote-desktop is installed and configured for port {{ rdp_port }}.
-          The service starts automatically on graphical login (it is a user-session service,
-          not a system service). Desktop Sharing and Remote Control will appear enabled
-          in Settings → Sharing after the first login.
+    - name: Enable and start xrdp
+      systemd:
+        name: xrdp
+        enabled: yes
+        state: started
 
     # ── SF Mono Nerd Font ─────────────────────────────────────────────────────
     - name: Create fonts directory
@@ -364,6 +307,11 @@
     - name: Restart SSH
       systemd:
         name: sshd
+        state: restarted
+
+    - name: Restart xrdp
+      systemd:
+        name: xrdp
         state: restarted
 
     - name: Update apt cache
