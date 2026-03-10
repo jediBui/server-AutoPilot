@@ -1,5 +1,5 @@
 ---
-- name: System Initialization
+- name: TARS System Initialization
   hosts: localhost
   connection: local
   become: yes
@@ -11,14 +11,27 @@
     theme_dir: "{{ getent_passwd[ansible_env.SUDO_USER | default(ansible_user_id)].4 }}/.config/starship_themes"
 
   tasks:
-    - name: Gathering user facts
+    - name: TARS | Gathering user facts
       getent:
         database: passwd
         key: "{{ target_user }}"
 
-    - name: Installing system packages
+    - name: TARS | Adding Google Chrome GPG key
+      get_url:
+        url: https://dl.google.com/linux/linux_signing_key.pub
+        dest: /usr/share/keyrings/google-chrome.asc
+        mode: '0644'
+
+    - name: TARS | Adding Google Chrome repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.asc] http://dl.google.com/linux/chrome/deb/ stable main"
+        state: present
+        filename: google-chrome
+
+    - name: TARS | Installing system packages and Chrome
       apt:
         name:
+          - google-chrome-stable
           - curl
           - git
           - openssh-server
@@ -28,10 +41,11 @@
           - qemu-guest-agent
           - gnome-remote-desktop
           - fontconfig
+          - starship
         state: present
         update_cache: yes
 
-    - name: Creating directory structure
+    - name: TARS | Creating directory structure
       file:
         path: "{{ item }}"
         state: directory
@@ -43,7 +57,7 @@
         - "{{ theme_dir }}"
         - "{{ target_home }}/.ssh"
 
-    - name: Downloading SF Mono Powerline fonts
+    - name: TARS | Downloading SF Mono Powerline fonts
       get_url:
         url: "https://github.com/Twixes/SF-Mono-Powerline/raw/master/SF-Mono-Powerline-{{ item }}.otf"
         dest: "{{ font_dir }}/SF-Mono-Powerline-{{ item }}.otf"
@@ -54,12 +68,12 @@
         - "Bold"
       register: font_download
 
-    - name: Updating font cache
+    - name: TARS | Updating font cache
       become_user: "{{ target_user }}"
       command: fc-cache -f "{{ font_dir }}"
       when: font_download.changed
 
-    - name: Configuring Firewall
+    - name: TARS | Configuring Firewall
       ufw:
         rule: allow
         port: "{{ item.port }}"
@@ -68,11 +82,11 @@
         - { port: '22', proto: 'tcp' }
         - { port: '3389', proto: 'tcp' }
 
-    - name: Enabling UFW
+    - name: TARS | Enabling UFW
       ufw:
         state: enabled
 
-    - name: Importing GitHub SSH Keys
+    - name: TARS | Importing GitHub SSH Keys
       get_url:
         url: "https://github.com/{{ gh_user }}.keys"
         dest: "{{ target_home }}/.ssh/authorized_keys"
@@ -80,7 +94,7 @@
         group: "{{ target_user }}"
         mode: '0600'
 
-    - name: Hardening SSH Configuration
+    - name: TARS | Hardening SSH Configuration
       copy:
         dest: /etc/ssh/sshd_config.d/99-hardened.conf
         content: |
@@ -89,7 +103,7 @@
           PermitRootLogin prohibit-password
       notify: Restart SSH
 
-    - name: Generating Starship Themes
+    - name: TARS | Generating Starship Themes
       copy:
         dest: "{{ theme_dir }}/{{ item.name }}.toml"
         owner: "{{ target_user }}"
@@ -114,7 +128,7 @@
         - { name: 'frappe',  dir: '#8caaee', char: '#a6d189', git: '#ca9ee6' }
         - { name: 'mocha',   dir: '#89b4fa', char: '#a6e3a1', git: '#cba6f7' }
 
-    - name: Setting default Starship theme
+    - name: TARS | Setting default Starship theme
       file:
         src: "{{ theme_dir }}/onedark.toml"
         dest: "{{ target_home }}/.config/starship.toml"
@@ -122,7 +136,7 @@
         force: yes
         owner: "{{ target_user }}"
 
-    - name: Updating .bashrc
+    - name: TARS | Updating .bashrc
       blockinfile:
         path: "{{ target_home }}/.bashrc"
         marker: "# {mark} TARS SYSTEM CONFIG"
@@ -132,9 +146,9 @@
           shopt -s histappend
           HISTSIZE=10000
           eval "$(starship init bash)"
-          alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml'
-          alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml'
-          alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml'
+          alias theme-dark='ln -sf ~/.config/starship_themes/onedark.toml ~/.config/starship.toml && echo "TARS: One Dark active."'
+          alias theme-frappe='ln -sf ~/.config/starship_themes/frappe.toml ~/.config/starship.toml && echo "TARS: Frappe active."'
+          alias theme-mocha='ln -sf ~/.config/starship_themes/mocha.toml ~/.config/starship.toml && echo "TARS: Mocha active."'
           [ -f /usr/share/doc/fzf/examples/key-bindings.bash ] && source /usr/share/doc/fzf/examples/key-bindings.bash
           bind '"\e[A": history-search-backward'
           bind '"\e[B": history-search-forward'
