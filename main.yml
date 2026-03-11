@@ -237,13 +237,9 @@
         mode: "0755"
 
     - name: Download Catppuccin Frappe starship theme
-      get_url:
-        url: "https://raw.githubusercontent.com/catppuccin/starship/main/themes/frappe.toml"
-        dest: "{{ user_home }}/.config/starship.toml"
-        owner: "{{ target_user }}"
-        group: "{{ target_user }}"
-        mode: "0644"
-        force: no
+      shell: curl -fsSL --retry 3 --retry-delay 5 --max-time 30 "https://raw.githubusercontent.com/catppuccin/starship/main/themes/frappe.toml" -o "{{ user_home }}/.config/starship.toml" && chown {{ target_user }}:{{ target_user }} "{{ user_home }}/.config/starship.toml" && chmod 644 "{{ user_home }}/.config/starship.toml"
+      args:
+        creates: "{{ user_home }}/.config/starship.toml"
 
     - name: Initialise Starship in .bashrc
       blockinfile:
