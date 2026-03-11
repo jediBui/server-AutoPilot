@@ -142,6 +142,7 @@
         name: qemu-guest-agent
         enabled: yes
         state: started
+      ignore_errors: yes
 
     # ── RDP via XRDP ─────────────────────────────────────────────────────────
     # xrdp is a system service — works headlessly, no active session needed.
