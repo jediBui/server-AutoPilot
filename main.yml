@@ -18,6 +18,56 @@
         that: ansible_facts["user_id"] == "root"
         fail_msg: "This playbook must be run as root (via sudo)"
 
+    # ── GUI Detection ─────────────────────────────────────────────────────────
+    # Checks three signals: a running display manager service, installed desktop
+    # packages, or an active DISPLAY/WAYLAND_DISPLAY environment variable.
+    # If any signal is positive, has_gui is set to true and GUI-only tasks
+    # (Chrome, xrdp) will run. On a headless/server install they are skipped.
+
+    - name: Check if a display manager service is active
+      shell: >
+        systemctl is-active --quiet gdm3 ||
+        systemctl is-active --quiet gdm ||
+        systemctl is-active --quiet lightdm ||
+        systemctl is-active --quiet sddm ||
+        systemctl is-active --quiet xdm
+      register: dm_active
+      failed_when: false
+      changed_when: false
+
+    - name: Check if desktop packages are installed
+      shell: >
+        dpkg -l ubuntu-desktop gnome-shell xfce4 kde-plasma-desktop lxde-core 2>/dev/null |
+        grep -qE '^ii'
+      register: desktop_pkgs
+      failed_when: false
+      changed_when: false
+
+    - name: Check for an active graphical display environment variable
+      shell: >
+        [ -n "${DISPLAY}" ] || [ -n "${WAYLAND_DISPLAY}" ]
+      register: display_env
+      failed_when: false
+      changed_when: false
+
+    - name: Set has_gui fact
+      set_fact:
+        has_gui: "{{
+          dm_active.rc == 0 or
+          desktop_pkgs.rc == 0 or
+          display_env.rc == 0
+        }}"
+
+    - name: Report GUI detection result
+      debug:
+        msg: >-
+          GUI environment detected: {{ has_gui }}.
+          {% if not has_gui %}
+          Chrome and xrdp will be skipped (headless/server mode).
+          {% else %}
+          Full desktop provisioning will run.
+          {% endif %}
+
     - name: Purge conflicting Chrome repo/keyring files before apt runs
       file:
         path: "{{ item }}"
@@ -27,6 +77,7 @@
         - /etc/apt/sources.list.d/google-chrome.list
         - /usr/share/keyrings/google-chrome.asc
         - /usr/share/keyrings/google-chrome.gpg
+      when: has_gui
 
     - name: Update apt cache
       apt:
@@ -104,6 +155,7 @@
         state: present
       notify: Restart SSH
 
+    # ── Google Chrome (GUI only) ───────────────────────────────────────────────
     - name: Write Google Chrome install script
       copy:
         dest: /tmp/install-chrome.sh
@@ -119,14 +171,16 @@
           rm -f /etc/apt/sources.list.d/google-chrome-stable.list /usr/share/keyrings/google-chrome.asc
           apt-get install -y google-chrome-stable
           rm -f /etc/apt/sources.list.d/google-chrome-stable.list /usr/share/keyrings/google-chrome.asc
+      when: has_gui
 
     - name: Install Google Chrome
       command: /tmp/install-chrome.sh
       args:
         creates: /usr/bin/google-chrome-stable
+      when: has_gui
 
     # ── UFW Firewall ──────────────────────────────────────────────────────────
-    - name: Configure and enable UFW
+    - name: Configure and enable UFW (with RDP port — GUI system)
       shell: |
         ufw --force reset
         ufw default deny incoming
@@ -135,6 +189,17 @@
         ufw allow {{ rdp_port }}/tcp comment 'RDP'
         ufw --force enable
       changed_when: true
+      when: has_gui
+
+    - name: Configure and enable UFW (SSH only — headless/server)
+      shell: |
+        ufw --force reset
+        ufw default deny incoming
+        ufw default allow outgoing
+        ufw allow 22/tcp comment 'SSH'
+        ufw --force enable
+      changed_when: true
+      when: not has_gui
 
     # ── QEMU Guest Agent ──────────────────────────────────────────────────────
     - name: Enable and start qemu-guest-agent
@@ -144,7 +209,7 @@
         state: started
       ignore_errors: yes
 
-    # ── RDP via XRDP ─────────────────────────────────────────────────────────
+    # ── RDP via XRDP (GUI only) ───────────────────────────────────────────────
     # xrdp is a system service — works headlessly, no active session needed.
     # Connect with: host:3389, your normal Ubuntu username and password.
 
@@ -154,6 +219,7 @@
           - xrdp
           - xorgxrdp
         state: present
+      when: has_gui
 
     - name: Set xrdp to listen on port {{ rdp_port }}
       lineinfile:
@@ -162,12 +228,14 @@
         line: "port={{ rdp_port }}"
         backup: yes
       notify: Restart xrdp
+      when: has_gui
 
     - name: Add xrdp user to ssl-cert group (fixes TLS errors)
       user:
         name: xrdp
         groups: ssl-cert
         append: yes
+      when: has_gui
 
     - name: Use the existing desktop session instead of a new Xorg session
       copy:
@@ -180,12 +248,14 @@
           export XDG_SESSION_TYPE=x11
           export XDG_CURRENT_DESKTOP=ubuntu:GNOME
           exec /usr/bin/gnome-session
+      when: has_gui
 
     - name: Enable and start xrdp
       systemd:
         name: xrdp
         enabled: yes
         state: started
+      when: has_gui
 
     # ── SF Mono Nerd Font ─────────────────────────────────────────────────────
     - name: Create fonts directory
@@ -264,11 +334,12 @@
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
 
-    # ── GNOME Terminal font configuration (best-effort, needs active session) ─
+    # ── GNOME Terminal font configuration (GUI only) ──────────────────────────
     - name: Check which terminal emulator is installed
       shell: "command -v gnome-terminal || command -v kgx || command -v xterm || echo none"
       register: terminal_bin
       changed_when: false
+      when: has_gui
 
     - name: Write terminal font dconf script (run after login)
       copy:
@@ -292,12 +363,21 @@
           else
             echo "No supported terminal found. Set font manually in your terminal preferences."
           fi
+      when: has_gui
 
-    - name: Note about terminal font
+    - name: Note about terminal font (GUI)
       debug:
         msg: >-
           Terminal detected: {{ terminal_bin.stdout }}.
           To apply the terminal font after login run: bash ~/.config/set-terminal-font.sh
+      when: has_gui and terminal_bin is defined
+
+    - name: Note about terminal font (headless)
+      debug:
+        msg: >-
+          Headless/server mode — skipping terminal font configuration,
+          Chrome install, and xrdp setup.
+      when: not has_gui
 
   # ── Handlers ────────────────────────────────────────────────────────────────
   handlers:
