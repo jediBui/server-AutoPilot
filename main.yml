@@ -11,23 +11,51 @@
     target_user: "{{ lookup('env', 'SUDO_USER') | default(lookup('env', 'USER'), true) }}"
     user_home: "{{ '/home/' + target_user if target_user != 'root' else '/root' }}"
 
-
   pre_tasks:
     - name: Verify running as root
       assert:
         that: ansible_facts["user_id"] == "root"
         fail_msg: "This playbook must be run as root (via sudo)"
 
+    # ── Stale repo cleanup ────────────────────────────────────────────────────
+    # Must happen before any apt task. Leftover Ansible PPA or Chrome list
+    # files cause apt-get update to exit non-zero on Ubuntu 26.04 (Resolute),
+    # which propagates into every subsequent apt module call.
+
+    - name: Remove stale Ansible PPA sources (not published for Resolute)
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/ansible-ubuntu-ansible-resolute.list
+        - /etc/apt/sources.list.d/ansible-ubuntu-ansible-resolute.sources
+        # Catch any release-codename variant left by add-apt-repository
+        - /etc/apt/sources.list.d/ansible-ubuntu-ansible-noble.list
+        - /etc/apt/sources.list.d/ansible-ubuntu-ansible-noble.sources
+
+    - name: Remove stale Chrome repo/keyring files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/apt/sources.list.d/google-chrome-stable.list
+        - /etc/apt/sources.list.d/google-chrome.list
+        - /usr/share/keyrings/google-chrome.asc
+        - /usr/share/keyrings/google-chrome.gpg
+
+    - name: Update apt cache (clean slate)
+      apt:
+        update_cache: yes
+        cache_valid_time: 0   # force refresh after removing stale sources
+
     # ── GUI Detection ─────────────────────────────────────────────────────────
-    # Checks three signals: a running display manager service, installed desktop
-    # packages, or an active DISPLAY/WAYLAND_DISPLAY environment variable.
-    # If any signal is positive, has_gui is set to true and GUI-only tasks
-    # (Chrome, xrdp) will run. On a headless/server install they are skipped.
+    # Three independent signals; any one positive sets has_gui = true.
+    # Ubuntu 26.04 ships GDM3 by default on desktop images.
 
     - name: Check if a display manager service is active
       shell: >
         systemctl is-active --quiet gdm3 ||
-        systemctl is-active --quiet gdm ||
+        systemctl is-active --quiet gdm  ||
         systemctl is-active --quiet lightdm ||
         systemctl is-active --quiet sddm ||
         systemctl is-active --quiet xdm
@@ -45,7 +73,7 @@
 
     - name: Check for an active graphical display environment variable
       shell: >
-        [ -n "${DISPLAY}" ] || [ -n "${WAYLAND_DISPLAY}" ]
+        [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]
       register: display_env
       failed_when: false
       changed_when: false
@@ -61,28 +89,12 @@
     - name: Report GUI detection result
       debug:
         msg: >-
-          GUI environment detected: {{ has_gui }}.
+          GUI detected: {{ has_gui }}.
           {% if not has_gui %}
-          Chrome and xrdp will be skipped (headless/server mode).
+          Headless/server mode — Chrome and xrdp will be skipped.
           {% else %}
           Full desktop provisioning will run.
           {% endif %}
-
-    - name: Purge conflicting Chrome repo/keyring files before apt runs
-      file:
-        path: "{{ item }}"
-        state: absent
-      loop:
-        - /etc/apt/sources.list.d/google-chrome-stable.list
-        - /etc/apt/sources.list.d/google-chrome.list
-        - /usr/share/keyrings/google-chrome.asc
-        - /usr/share/keyrings/google-chrome.gpg
-      when: has_gui
-
-    - name: Update apt cache
-      apt:
-        update_cache: yes
-        cache_valid_time: 3600
 
   tasks:
     # ── SSH Keys ──────────────────────────────────────────────────────────────
@@ -111,7 +123,9 @@
         group: "{{ target_user }}"
         mode: "0600"
 
-    # ── Core Applications ─────────────────────────────────────────────────────
+    # ── Core Packages ─────────────────────────────────────────────────────────
+    # gnome-tweaks removed from headless installs in 26.04 minimal; safe to
+    # keep here because apt will simply skip it if the desktop isn't present.
     - name: Install core packages
       apt:
         name:
@@ -130,47 +144,62 @@
         state: present
         update_cache: no
 
-    - name: Disable SSH password authentication
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "^#?PasswordAuthentication"
-        line: "PasswordAuthentication no"
-        state: present
-        backup: yes
-      notify: Restart SSH
+    # ── SSH hardening ─────────────────────────────────────────────────────────
+    # Ubuntu 26.04 ships OpenSSH 9.x which splits config across
+    # /etc/ssh/sshd_config and drop-ins under /etc/ssh/sshd_config.d/.
+    # Writing a drop-in is the canonical approach going forward.
 
-    - name: Disable SSH challenge-response authentication
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "^#?ChallengeResponseAuthentication"
-        line: "ChallengeResponseAuthentication no"
-        state: present
-      notify: Restart SSH
-
-    - name: Ensure PubkeyAuthentication is enabled
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: "^#?PubkeyAuthentication"
-        line: "PubkeyAuthentication yes"
-        state: present
+    - name: Write SSH hardening drop-in
+      copy:
+        dest: /etc/ssh/sshd_config.d/99-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Managed by Ansible — do not edit manually
+          PasswordAuthentication no
+          ChallengeResponseAuthentication no
+          PubkeyAuthentication yes
       notify: Restart SSH
 
     # ── Google Chrome (GUI only) ───────────────────────────────────────────────
+    # Uses the official .deb from Google's repo. The install script is written
+    # as a shell file to keep the GPG key fetch and apt source setup atomic.
+    # apt-get update inside the script is scoped to only the Chrome source to
+    # avoid choking on any other broken repo on the system.
+
     - name: Write Google Chrome install script
       copy:
         dest: /tmp/install-chrome.sh
         mode: "0755"
         content: |
           #!/bin/bash
-          set -e
-          curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg
-          chmod 644 /usr/share/keyrings/google-chrome.gpg
-          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list
-          apt-get update -qq
-          apt-get install -y --download-only google-chrome-stable
-          rm -f /etc/apt/sources.list.d/google-chrome-stable.list /usr/share/keyrings/google-chrome.asc
+          set -euo pipefail
+
+          KEYRING=/usr/share/keyrings/google-chrome.gpg
+          LIST=/etc/apt/sources.list.d/google-chrome.list
+
+          # Add GPG key
+          curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+            | gpg --dearmor -o "${KEYRING}"
+          chmod 644 "${KEYRING}"
+
+          # Add repo source
+          echo "deb [arch=amd64 signed-by=${KEYRING}] \
+          https://dl.google.com/linux/chrome/deb/ stable main" \
+            > "${LIST}"
+
+          # Update only the Chrome repo to avoid noise from other sources
+          apt-get update -qq \
+            -o Dir::Etc::sourcelist="${LIST}" \
+            -o Dir::Etc::sourceparts="-" \
+            -o APT::Get::List-Cleanup=0
+
           apt-get install -y google-chrome-stable
-          rm -f /etc/apt/sources.list.d/google-chrome-stable.list /usr/share/keyrings/google-chrome.asc
+
+          # Remove the auto-generated stable list Google's postinst drops in
+          rm -f /etc/apt/sources.list.d/google-chrome-stable.list \
+                /usr/share/keyrings/google-chrome.asc
       when: has_gui
 
     - name: Install Google Chrome
@@ -180,18 +209,18 @@
       when: has_gui
 
     # ── UFW Firewall ──────────────────────────────────────────────────────────
-    - name: Configure and enable UFW (with RDP port — GUI system)
+    - name: Configure UFW — GUI system (SSH + RDP)
       shell: |
         ufw --force reset
         ufw default deny incoming
         ufw default allow outgoing
-        ufw allow 22/tcp comment 'SSH'
+        ufw allow 22/tcp    comment 'SSH'
         ufw allow {{ rdp_port }}/tcp comment 'RDP'
         ufw --force enable
       changed_when: true
       when: has_gui
 
-    - name: Configure and enable UFW (SSH only — headless/server)
+    - name: Configure UFW — headless/server (SSH only)
       shell: |
         ufw --force reset
         ufw default deny incoming
@@ -210,8 +239,9 @@
       ignore_errors: yes
 
     # ── RDP via XRDP (GUI only) ───────────────────────────────────────────────
-    # xrdp is a system service — works headlessly, no active session needed.
-    # Connect with: host:3389, your normal Ubuntu username and password.
+    # xorgxrdp requires Xorg; on Ubuntu 26.04 desktop (Wayland default) this
+    # is still available as xserver-xorg. XRDP forces an X11 session via
+    # .xsession, so Wayland is not required for RDP to work.
 
     - name: Install xrdp
       apt:
@@ -221,7 +251,7 @@
         state: present
       when: has_gui
 
-    - name: Set xrdp to listen on port {{ rdp_port }}
+    - name: Set xrdp listen port to {{ rdp_port }}
       lineinfile:
         path: /etc/xrdp/xrdp.ini
         regexp: "^port="
@@ -237,7 +267,7 @@
         append: yes
       when: has_gui
 
-    - name: Use the existing desktop session instead of a new Xorg session
+    - name: Write .xsession to force GNOME/X11 for RDP sessions
       copy:
         dest: "{{ user_home }}/.xsession"
         owner: "{{ target_user }}"
@@ -270,10 +300,12 @@
         dest: /tmp/SF-Mono-Nerd-Font
         depth: 1
 
-    - name: Copy Regular font files only
+    - name: Copy Regular font files
       shell: |
-        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f -name "*.ttf" -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
-        find /tmp/SF-Mono-Nerd-Font -iname "*Regular*" -type f -name "*.otf" -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
+        find /tmp/SF-Mono-Nerd-Font \
+          \( -iname "*Regular*.ttf" -o -iname "*Regular*.otf" \) \
+          -type f \
+          -exec cp {} /usr/local/share/fonts/SFMonoNerd/ \;
       args:
         creates: /usr/local/share/fonts/SFMonoNerd/.installed
 
@@ -292,9 +324,8 @@
         path: /usr/local/bin/starship
       register: starship_binary
 
-    - name: Download and install Starship
-      shell: |
-        curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
+    - name: Install Starship
+      shell: curl -fsSL https://starship.rs/install.sh | sh -s -- --yes
       when: not starship_binary.stat.exists
       args:
         creates: /usr/local/bin/starship
@@ -308,7 +339,12 @@
         mode: "0755"
 
     - name: Download Catppuccin Frappe starship theme
-      shell: curl -fsSL --retry 3 --retry-delay 5 --max-time 30 "https://raw.githubusercontent.com/catppuccin/starship/main/themes/frappe.toml" -o "{{ user_home }}/.config/starship.toml" && chown {{ target_user }}:{{ target_user }} "{{ user_home }}/.config/starship.toml" && chmod 644 "{{ user_home }}/.config/starship.toml"
+      shell: |
+        curl -fsSL --retry 3 --retry-delay 5 --max-time 30 \
+          "https://raw.githubusercontent.com/catppuccin/starship/main/themes/frappe.toml" \
+          -o "{{ user_home }}/.config/starship.toml"
+        chown {{ target_user }}:{{ target_user }} "{{ user_home }}/.config/starship.toml"
+        chmod 644 "{{ user_home }}/.config/starship.toml"
       args:
         creates: "{{ user_home }}/.config/starship.toml"
 
@@ -317,31 +353,37 @@
         path: "{{ user_home }}/.bashrc"
         marker: "# {mark} STARSHIP PROMPT"
         block: |
-          # Starship prompt
           export STARSHIP_CONFIG="$HOME/.config/starship.toml"
           eval "$(starship init bash)"
         create: yes
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
 
-    - name: Initialise Starship in .bash_profile (login shells)
+    - name: Source .bashrc from .bash_profile (login shells)
       blockinfile:
         path: "{{ user_home }}/.bash_profile"
-        marker: "# {mark} STARSHIP PROMPT"
+        marker: "# {mark} BASHRC SOURCE"
         block: |
           [[ -f ~/.bashrc ]] && source ~/.bashrc
         create: yes
         owner: "{{ target_user }}"
         group: "{{ target_user }}"
 
-    # ── GNOME Terminal font configuration (GUI only) ──────────────────────────
-    - name: Check which terminal emulator is installed
-      shell: "command -v gnome-terminal || command -v kgx || command -v xterm || echo none"
+    # ── Terminal font configuration (GUI only) ────────────────────────────────
+    # dconf requires a running D-Bus session and cannot be applied during
+    # provisioning. A helper script is dropped for the user to run post-login.
+
+    - name: Detect installed terminal emulator
+      shell: >
+        command -v gnome-terminal ||
+        command -v kgx ||
+        command -v xterm ||
+        echo none
       register: terminal_bin
       changed_when: false
       when: has_gui
 
-    - name: Write terminal font dconf script (run after login)
+    - name: Write terminal font helper script
       copy:
         dest: "{{ user_home }}/.config/set-terminal-font.sh"
         owner: "{{ target_user }}"
@@ -349,48 +391,46 @@
         mode: "0755"
         content: |
           #!/bin/bash
-          # Run this once after your first graphical login to apply the terminal font.
-          set -e
+          # Run once after first graphical login to apply the terminal font.
+          set -euo pipefail
+          FONT="SFMono Nerd Font Regular {{ font_size }}"
+
           if command -v gnome-terminal &>/dev/null; then
             PROFILE=$(gsettings get org.gnome.Terminal.ProfilesList default | tr -d "'")
-            dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'SFMono Nerd Font Regular 13'"
+            dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/font "'${FONT}'"
             dconf write /org/gnome/terminal/legacy/profiles:/:${PROFILE}/use-system-font "false"
-            echo "gnome-terminal font set."
+            echo "gnome-terminal: font set to '${FONT}'"
           elif command -v kgx &>/dev/null; then
-            gsettings set org.gnome.Console custom-font "'SFMono Nerd Font Regular 13'"
+            gsettings set org.gnome.Console custom-font "'${FONT}'"
             gsettings set org.gnome.Console use-system-font false
-            echo "GNOME Console font set."
+            echo "GNOME Console: font set to '${FONT}'"
           else
-            echo "No supported terminal found. Set font manually in your terminal preferences."
+            echo "No supported terminal found — set the font manually."
           fi
       when: has_gui
 
-    - name: Note about terminal font (GUI)
+    - name: Remind user to run font script after login (GUI)
       debug:
         msg: >-
-          Terminal detected: {{ terminal_bin.stdout }}.
-          To apply the terminal font after login run: bash ~/.config/set-terminal-font.sh
+          Terminal detected: {{ terminal_bin.stdout | default('unknown') }}.
+          Run after your first login: bash ~/.config/set-terminal-font.sh
       when: has_gui and terminal_bin is defined
 
-    - name: Note about terminal font (headless)
+    - name: Note — headless mode, GUI tasks skipped
       debug:
         msg: >-
-          Headless/server mode — skipping terminal font configuration,
-          Chrome install, and xrdp setup.
+          Headless/server mode — Chrome, xrdp, and terminal font setup skipped.
       when: not has_gui
 
-  # ── Handlers ────────────────────────────────────────────────────────────────
+  # ── Handlers ─────────────────────────────────────────────────────────────────
   handlers:
     - name: Restart SSH
       systemd:
-        name: sshd
+        # Ubuntu 26.04 uses 'ssh' as the service name (not 'sshd')
+        name: ssh
         state: restarted
 
     - name: Restart xrdp
       systemd:
         name: xrdp
         state: restarted
-
-    - name: Update apt cache
-      apt:
-        update_cache: yes
