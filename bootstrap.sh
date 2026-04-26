@@ -20,6 +20,25 @@ fi
 # Keep track of the real user who invoked sudo
 REAL_USER="${SUDO_USER:-$USER}"
 
+# ── Purge stale repo sources BEFORE any apt call ───────────────────────────────
+# Any leftover Ansible PPA or Chrome list file causes apt-get update to exit
+# non-zero, which trips set -e and kills the script immediately. Must run first.
+echo "Cleaning stale apt sources..."
+
+for f in \
+  /etc/apt/sources.list.d/ansible-ubuntu-ansible-*.list \
+  /etc/apt/sources.list.d/ansible-ubuntu-ansible-*.sources \
+  /usr/share/keyrings/ansible*.gpg \
+  /usr/share/keyrings/ansible*.asc; do
+  rm -f "$f"
+done
+
+rm -f \
+  /etc/apt/sources.list.d/google-chrome*.list \
+  /etc/apt/sources.list.d/google-chrome*.sources \
+  /usr/share/keyrings/google-chrome.asc \
+  /usr/share/keyrings/google-chrome.gpg
+
 # ── System update ──────────────────────────────────────────────────────────────
 echo "Updating system..."
 apt-get update -qq
@@ -39,28 +58,6 @@ if ! command -v ansible-playbook &>/dev/null; then
   export PATH="${PATH}:/root/.local/bin"
   echo "Ansible $(ansible --version | head -1) installed."
 fi
-
-# ── Purge any stale Ansible PPA sources ───────────────────────────────────────
-# Leftover list files cause every subsequent apt-get update to exit non-zero,
-# which kills any script or install task that shells out to apt.
-for f in \
-  /etc/apt/sources.list.d/ansible-ubuntu-ansible-*.list \
-  /etc/apt/sources.list.d/ansible-ubuntu-ansible-*.sources \
-  /usr/share/keyrings/ansible*.gpg \
-  /usr/share/keyrings/ansible*.asc; do
-  rm -f "$f"
-done
-
-# ── Purge any stale Chrome repo files ─────────────────────────────────────────
-# main.yml re-adds these correctly; starting clean avoids signed-by conflicts.
-rm -f \
-  /etc/apt/sources.list.d/google-chrome*.list \
-  /etc/apt/sources.list.d/google-chrome*.sources \
-  /usr/share/keyrings/google-chrome.asc \
-  /usr/share/keyrings/google-chrome.gpg
-
-# Refresh apt after removing stale sources
-apt-get update -qq
 
 # ── Download and run the playbook ─────────────────────────────────────────────
 echo "Downloading playbook..."
