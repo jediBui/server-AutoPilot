@@ -25,10 +25,14 @@ apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
 
 # ── Install Ansible if missing ────────────────────────────────────────────────
+# ── Install Ansible if missing ────────────────────────────────────────────────
 if ! command -v ansible-playbook &>/dev/null; then
-  echo "Installing Ansible..."
-  apt-get update -qq
-  apt-get install -y -qq curl software-properties-common gnupg
+  echo "Installing Ansible via pipx..."
+  apt-get install -y -qq python3-pip python3-venv pipx
+  pipx install --include-deps ansible
+  pipx ensurepath
+  # Make ansible available to root in this session
+  export PATH="$PATH:/root/.local/bin"
 
   # Ansible PPA doesn't publish for non-LTS releases (e.g. resolute).
   # Pin to noble (24.04 LTS) which is always supported.
