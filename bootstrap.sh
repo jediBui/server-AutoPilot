@@ -28,11 +28,25 @@ DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
 if ! command -v ansible-playbook &>/dev/null; then
   echo "Installing Ansible..."
   apt-get update -qq
-  apt-get install -y -qq curl software-properties-common
-  add-apt-repository --yes --update ppa:ansible/ansible
+  apt-get install -y -qq curl software-properties-common gnupg
+
+  # Ansible PPA doesn't publish for non-LTS releases (e.g. resolute).
+  # Pin to noble (24.04 LTS) which is always supported.
+  UBUNTU_CODENAME="$(lsb_release -cs)"
+  PPA_CODENAME="noble"
+  case "$UBUNTU_CODENAME" in
+    noble|jammy|focal) PPA_CODENAME="$UBUNTU_CODENAME" ;;
+  esac
+
+  curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x6125E2A8C77F2818FB7BD15B93C4A3FD7BB9C367" \
+    | gpg --dearmor -o /usr/share/keyrings/ansible-archive-keyring.gpg
+
+  echo "deb [signed-by=/usr/share/keyrings/ansible-archive-keyring.gpg] https://ppa.launchpadcontent.net/ansible/ansible/ubuntu ${PPA_CODENAME} main" \
+    > /etc/apt/sources.list.d/ansible.list
+
+  apt-get update -qq
   apt-get install -y -qq ansible
 fi
-
 # ── Clear any leftover Chrome repo conflicts ──────────────────────────────────
 rm -f /etc/apt/sources.list.d/google-chrome*.list \
       /usr/share/keyrings/google-chrome.asc \
