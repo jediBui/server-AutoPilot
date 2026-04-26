@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bootstrap.sh — installs Ansible and runs the provisioning playbook
 # Usage: sudo bash bootstrap.sh
+# Tested on: Ubuntu 26.04 LTS (Resolute)
 set -euo pipefail
 
 GITHUB_USER="jediBui"
@@ -10,7 +11,7 @@ PLAYBOOK="/tmp/main.yml"
 ANSIBLE_CFG="/tmp/ansible.cfg"
 ANSIBLE_CFG_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main/ansible.cfg"
 
-# ── Must run as root ──────────────────────────────────────────────────────────
+# ── Must run as root ───────────────────────────────────────────────────────────
 if [[ $EUID -ne 0 ]]; then
   echo "Run with sudo: sudo bash bootstrap.sh"
   exit 1
@@ -19,53 +20,61 @@ fi
 # Keep track of the real user who invoked sudo
 REAL_USER="${SUDO_USER:-$USER}"
 
-# ── System update ────────────────────────────────────────────────────────────
-# echo "Updating system..."
-# apt-get update -qq
-# DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+# ── System update ──────────────────────────────────────────────────────────────
+echo "Updating system..."
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
 
-# ── Install Ansible if missing ────────────────────────────────────────────────
+# ── Install Ansible via pipx ───────────────────────────────────────────────────
+# The ansible/ansible PPA does not publish a release file for Ubuntu 26.04
+# (Resolute). pipx is the recommended, distro-agnostic install method and
+# avoids the externally-managed-environment restrictions in Python 3.12+.
 if ! command -v ansible-playbook &>/dev/null; then
   echo "Installing Ansible via pipx..."
   apt-get install -y -qq python3-pip python3-venv pipx
+  # Install into root's home so the playbook run below finds it immediately
   pipx install --include-deps ansible
   pipx ensurepath
-  # Make ansible available to root in this session
-  export PATH="$PATH:/root/.local/bin"
-
-  # Ansible PPA doesn't publish for non-LTS releases (e.g. resolute).
-  # Pin to noble (24.04 LTS) which is always supported.
-  UBUNTU_CODENAME="$(lsb_release -cs)"
-  PPA_CODENAME="noble"
-  case "$UBUNTU_CODENAME" in
-    noble|jammy|focal) PPA_CODENAME="$UBUNTU_CODENAME" ;;
-  esac
-
-  curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x6125E2A8C77F2818FB7BD15B93C4A3FD7BB9C367" \
-    | gpg --dearmor -o /usr/share/keyrings/ansible-archive-keyring.gpg
-
-  echo "deb [signed-by=/usr/share/keyrings/ansible-archive-keyring.gpg] https://ppa.launchpadcontent.net/ansible/ansible/ubuntu ${PPA_CODENAME} main" \
-    > /etc/apt/sources.list.d/ansible.list
-
-  apt-get update -qq
-  apt-get install -y -qq ansible
+  # Expose the pipx bin dir in the current session without starting a new shell
+  export PATH="${PATH}:/root/.local/bin"
+  echo "Ansible $(ansible --version | head -1) installed."
 fi
-# ── Clear any leftover Chrome repo conflicts ──────────────────────────────────
-rm -f /etc/apt/sources.list.d/google-chrome*.list \
-      /usr/share/keyrings/google-chrome.asc \
-      /usr/share/keyrings/google-chrome.gpg
+
+# ── Purge any stale Ansible PPA sources ───────────────────────────────────────
+# Leftover list files cause every subsequent apt-get update to exit non-zero,
+# which kills any script or install task that shells out to apt.
+for f in \
+  /etc/apt/sources.list.d/ansible-ubuntu-ansible-*.list \
+  /etc/apt/sources.list.d/ansible-ubuntu-ansible-*.sources \
+  /usr/share/keyrings/ansible*.gpg \
+  /usr/share/keyrings/ansible*.asc; do
+  rm -f "$f"
+done
+
+# ── Purge any stale Chrome repo files ─────────────────────────────────────────
+# main.yml re-adds these correctly; starting clean avoids signed-by conflicts.
+rm -f \
+  /etc/apt/sources.list.d/google-chrome*.list \
+  /etc/apt/sources.list.d/google-chrome*.sources \
+  /usr/share/keyrings/google-chrome.asc \
+  /usr/share/keyrings/google-chrome.gpg
+
+# Refresh apt after removing stale sources
+apt-get update -qq
 
 # ── Download and run the playbook ─────────────────────────────────────────────
 echo "Downloading playbook..."
-curl -fsSL "$PLAYBOOK_URL" -o "$PLAYBOOK"
-curl -fsSL "$ANSIBLE_CFG_URL" -o "$ANSIBLE_CFG"
+curl -fsSL "$PLAYBOOK_URL"     -o "$PLAYBOOK"
+curl -fsSL "$ANSIBLE_CFG_URL"  -o "$ANSIBLE_CFG"
 
 echo "Running playbook..."
-ANSIBLE_CONFIG="$ANSIBLE_CFG" ANSIBLE_FORCE_COLOR=1 ansible-playbook \
+ANSIBLE_CONFIG="$ANSIBLE_CFG" \
+ANSIBLE_FORCE_COLOR=1 \
+ansible-playbook \
   --connection=local \
   --inventory "localhost," \
   -e "target_user=${REAL_USER}" \
-  -e "ansible_python_interpreter=$(which python3)" \
+  -e "ansible_python_interpreter=$(command -v python3)" \
   "$PLAYBOOK"
 
 echo ""
