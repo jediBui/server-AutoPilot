@@ -20,11 +20,10 @@ fi
 REAL_USER="${SUDO_USER:-$USER}"
 
 # ── System update ────────────────────────────────────────────────────────────
-echo "Updating system..."
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
+# echo "Updating system..."
+# apt-get update -qq
+# DEBIAN_FRONTEND=noninteractive apt-get upgrade -y -qq
 
-# ── Install Ansible if missing ────────────────────────────────────────────────
 # ── Install Ansible if missing ────────────────────────────────────────────────
 if ! command -v ansible-playbook &>/dev/null; then
   echo "Installing Ansible via pipx..."
